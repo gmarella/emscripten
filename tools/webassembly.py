@@ -466,6 +466,29 @@ class Module:
       functions.append(FunctionBody(start, body_size))
       self.seek(start + body_size)
     return functions
+  
+  @memoize
+  def get_function_names(self):
+    name_section = self.get_custom_section('name')
+    name_map = {}
+    if not name_section:
+      return []
+    self.seek(name_section.offset)
+    self.read_string()  # name
+    section_end = name_section.offset + name_section.size
+    while self.tell() < section_end:
+        subsection_type = self.read_byte()
+        subsection_size = self.read_uleb()
+        if subsection_type != 1:
+            self.seek(self.tell() + subsection_size)
+            continue
+        count = self.read_uleb()
+        while count > 0:
+            index = self.read_uleb()
+            name = self.read_string()
+            name_map[index] = name
+            count -= 1
+    return name_map
 
   def get_section(self, section_code):
     return next((s for s in self.sections() if s.type == section_code), None)

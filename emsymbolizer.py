@@ -20,6 +20,7 @@ import subprocess
 import sys
 from tools import shared
 from tools import webassembly
+from tools import wasm_offset_converter
 
 LLVM_SYMBOLIZER = os.path.expanduser(
     shared.build_llvm_tool_path(shared.exe_suffix('llvm-symbolizer')))
@@ -90,9 +91,10 @@ def get_sourceMappingURL_section(module):
 
 class WasmSourceMap(object):
   # This implementation is derived from emscripten's sourcemap-support.js
-  Location = namedtuple('Location', ['source', 'line', 'column'])
+  Location = namedtuple('Location', ['source', 'line', 'column', 'name'])
 
-  def __init__(self):
+  def __init__(self, offsetConverter):
+    self.offsetConverter = offsetConverter
     self.version = None
     self.sources = []
     self.mappings = {}
@@ -137,6 +139,8 @@ class WasmSourceMap(object):
     col = 1
     for segment in source_map_json['mappings'].split(','):
       data = decodeVLQ(segment)
+      if shared.DEBUG:
+        print("\n data: {} \n".format(data))
       info = []
 
       offset += data[0]
@@ -149,6 +153,10 @@ class WasmSourceMap(object):
       if len(data) >= 4:
         col += data[3]
         info.append(col)
+      info.append(self.offsetConverter.getName(offset))
+      # if len(data) >= 5:
+      #   name += data[4]
+      #   info.append(name)
       # TODO: see if we need the name, which is the next field (data[4])
 
       self.mappings[offset] = WasmSourceMap.Location(*info)
@@ -175,11 +183,12 @@ class WasmSourceMap(object):
     return LocationInfo(
         self.sources[info.source] if info.source is not None else None,
         info.line,
-        info.column
+        info.column,
+        info.name
       )
 
 
-def symbolize_address_sourcemap(module, address, force_file):
+def symbolize_address_sourcemap(module, address, force_file, offsetConverter):
   URL = force_file
   if not URL:
     # If a sourcemap file is not forced, read it from the wasm module
@@ -192,7 +201,7 @@ def symbolize_address_sourcemap(module, address, force_file):
 
   if shared.DEBUG:
     print(f'Source Mapping URL: {URL}')
-  sm = WasmSourceMap()
+  sm = WasmSourceMap(offsetConverter)
   sm.parse(URL)
   if shared.DEBUG:
     csoff = get_codesec_offset(module)
@@ -208,6 +217,7 @@ def main(args):
     base = 16 if args.address.lower().startswith('0x') else 10
     address = int(args.address, base)
     symbolized = 0
+    offsetConverter = wasm_offset_converter.WasmOffsetConverter(args.wasm_file, module)
 
     if args.addrtype == 'code':
       address += get_codesec_offset(module)
@@ -219,7 +229,7 @@ def main(args):
 
     if ((get_sourceMappingURL_section(module) and not args.source) or
        'sourcemap' in args.source):
-      symbolize_address_sourcemap(module, address, args.file)
+      symbolize_address_sourcemap(module, address, args.file, offsetConverter)
       symbolized += 1
 
     if not symbolized:

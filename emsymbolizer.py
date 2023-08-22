@@ -215,7 +215,13 @@ def symbolize_address_sourcemap(module, address, force_file, offsetConverter):
 def main(args):
   with webassembly.Module(args.wasm_file) as module:
     base = 16 if args.address.lower().startswith('0x') else 10
-    address = int(args.address, base)
+    address_str = args.address
+    if address_str[-8] == "8":
+      # TODO:Gopi; ust dumping random name for JS symbol, fix this properly.
+      print(f'anonymous_js_function\n??:??:??')
+      address_str = address_str[:-8] + '0' + address_str[-7:]
+      return
+    address = int(address_str, base)
     symbolized = 0
     offsetConverter = wasm_offset_converter.WasmOffsetConverter(args.wasm_file, module)
 

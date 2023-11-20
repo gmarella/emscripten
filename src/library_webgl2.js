@@ -24,12 +24,7 @@ var LibraryWebGL2 = {
     }
     switch (name) {
       case 0x1F03 /* GL_EXTENSIONS */:
-        var exts = GLctx.getSupportedExtensions() || []; // .getSupportedExtensions() can return null if context is lost, so coerce to empty array.
-#if GL_EXTENSIONS_IN_PREFIXED_FORMAT
-        exts = exts.concat(exts.map(function(e) { return "GL_" + e; }));
-#endif
-        exts = exts.map(function(e) { return stringToNewUTF8(e); });
-
+        var exts = GL.getExtensions().map((e) => stringToNewUTF8(e));
         stringiCache = GL.stringiCache[name] = exts;
         if (index < 0 || index >= stringiCache.length) {
           GL.recordError(0x501/*GL_INVALID_VALUE*/);
@@ -50,7 +45,7 @@ var LibraryWebGL2 = {
 
   glGetInteger64v__deps: ['$emscriptenWebGLGet'],
   glGetInteger64v: (name_, p) => {
-    emscriptenWebGLGet(name_, p, {{{ cDefs.EM_FUNC_SIG_PARAM_I64 }}});
+    emscriptenWebGLGet(name_, p, {{{ cDefs.EM_FUNC_SIG_PARAM_J }}});
   },
 
   glGetInternalformativ: (target, internalformat, pname, bufSize, params) => {
@@ -461,7 +456,7 @@ var LibraryWebGL2 = {
     }
 
     switch (type) {
-      case {{{ cDefs.EM_FUNC_SIG_PARAM_I64 }}}: writeI53ToI64(data, ret); break;
+      case {{{ cDefs.EM_FUNC_SIG_PARAM_J }}}: writeI53ToI64(data, ret); break;
       case {{{ cDefs.EM_FUNC_SIG_PARAM_I }}}: {{{ makeSetValue('data', '0', 'ret', 'i32') }}}; break;
       case {{{ cDefs.EM_FUNC_SIG_PARAM_F }}}: {{{ makeSetValue('data', '0', 'ret', 'float') }}}; break;
       case {{{ cDefs.EM_FUNC_SIG_PARAM_B }}}: {{{ makeSetValue('data', '0', 'ret ? 1 : 0', 'i8') }}}; break;
@@ -475,7 +470,7 @@ var LibraryWebGL2 = {
 
   glGetInteger64i_v__deps: ['$emscriptenWebGLGetIndexed'],
   glGetInteger64i_v: (target, index, data) =>
-    emscriptenWebGLGetIndexed(target, index, data, {{{ cDefs.EM_FUNC_SIG_PARAM_I64 }}}),
+    emscriptenWebGLGetIndexed(target, index, data, {{{ cDefs.EM_FUNC_SIG_PARAM_J }}}),
 
   // Uniform Buffer objects
   glBindBufferBase: (target, index, buffer) => {

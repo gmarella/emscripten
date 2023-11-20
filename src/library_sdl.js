@@ -424,9 +424,7 @@ var LibrarySDL = {
         usePageCanvas,
         source,
 
-        isFlagSet: (flag) => {
-          return flags & flag;
-        }
+        isFlagSet: (flag) => flags & flag
       };
 
       return surf;
@@ -871,7 +869,7 @@ var LibrarySDL = {
       if (!SDL.eventHandler) return;
 
       while (SDL.pollEvent(SDL.eventHandlerTemp)) {
-        {{{ makeDynCall('iii', 'SDL.eventHandler') }}}(SDL.eventHandlerContext, SDL.eventHandlerTemp);
+        {{{ makeDynCall('ipp', 'SDL.eventHandler') }}}(SDL.eventHandlerContext, SDL.eventHandlerTemp);
       }
     },
 
@@ -1723,9 +1721,10 @@ var LibrarySDL = {
 #endif
 
   SDL_WM_SetCaption__proxy: 'sync',
+  SDL_WM_SetCaption__deps: ['emscripten_set_window_title'],
   SDL_WM_SetCaption: (title, icon) => {
-    if (title && typeof setWindowTitle != 'undefined') {
-      setWindowTitle(UTF8ToString(title));
+    if (title) {
+      _emscripten_set_window_title(title);
     }
     icon = icon && UTF8ToString(icon);
   },
@@ -1811,9 +1810,7 @@ var LibrarySDL = {
 
   SDL_CreateRGBSurface__deps: ['malloc', 'free'],
   SDL_CreateRGBSurface__proxy: 'sync',
-  SDL_CreateRGBSurface: (flags, width, height, depth, rmask, gmask, bmask, amask) => {
-    return SDL.makeSurface(width, height, flags, false, 'CreateRGBSurface', rmask, gmask, bmask, amask);
-  },
+  SDL_CreateRGBSurface: (flags, width, height, depth, rmask, gmask, bmask, amask) => SDL.makeSurface(width, height, flags, false, 'CreateRGBSurface', rmask, gmask, bmask, amask),
 
   SDL_CreateRGBSurfaceFrom__proxy: 'sync',
   SDL_CreateRGBSurfaceFrom: (pixels, width, height, depth, pitch, rmask, gmask, bmask, amask) => {
@@ -2393,7 +2390,7 @@ var LibrarySDL = {
           if (secsUntilNextPlayStart >= SDL.audio.bufferingDelay + SDL.audio.bufferDurationSecs*SDL.audio.numSimultaneouslyQueuedBuffers) return;
 
           // Ask SDL audio data from the user code.
-          {{{ makeDynCall('viii', 'SDL.audio.callback') }}}(SDL.audio.userdata, SDL.audio.buffer, SDL.audio.bufferSize);
+          {{{ makeDynCall('vppi', 'SDL.audio.callback') }}}(SDL.audio.userdata, SDL.audio.buffer, SDL.audio.bufferSize);
           // And queue it to be played after the currently playing audio stream.
           SDL.audio.pushAudio(SDL.audio.buffer, SDL.audio.bufferSize);
         }
@@ -3026,9 +3023,7 @@ var LibrarySDL = {
   },
 
   Mix_PausedMusic__proxy: 'sync',
-  Mix_PausedMusic: () => {
-    return (SDL.music.audio && SDL.music.audio.paused) ? 1 : 0;
-  },
+  Mix_PausedMusic: () => (SDL.music.audio && SDL.music.audio.paused) ? 1 : 0,
 
   // http://www.libsdl.org/projects/SDL_mixer/docs/SDL_mixer_33.html#SEC33
   Mix_Resume__proxy: 'sync',
@@ -3305,9 +3300,7 @@ var LibrarySDL = {
   // SDL 2
 
   SDL_GL_ExtensionSupported__proxy: 'sync',
-  SDL_GL_ExtensionSupported: (extension) => {
-    return Module.ctx.getExtension(extension) | 0;
-  },
+  SDL_GL_ExtensionSupported: (extension) => Module.ctx.getExtension(extension) | 0,
 
   SDL_DestroyWindow: (window) => {},
 
@@ -3524,7 +3517,7 @@ var LibrarySDL = {
   SDL_AddTimer__deps: ['$safeSetTimeout'],
   SDL_AddTimer: (interval, callback, param) =>
     safeSetTimeout(
-      () => {{{ makeDynCall('iii', 'callback') }}}(interval, param),
+      () => {{{ makeDynCall('iip', 'callback') }}}(interval, param),
       interval),
 
   SDL_RemoveTimer__proxy: 'sync',

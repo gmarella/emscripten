@@ -94,9 +94,7 @@ addToLibrary({
         return p !== '.' && p !== '..';
       };
       function toAbsolute(root) {
-        return (p) => {
-          return PATH.join2(root, p);
-        }
+        return (p) => PATH.join2(root, p);
       };
 
       var check = FS.readdir(mount.mountpoint).filter(isRealDir).map(toAbsolute(mount.mountpoint));
@@ -209,7 +207,7 @@ addToLibrary({
     },
     loadRemoteEntry: (store, path, callback) => {
       var req = store.get(path);
-      req.onsuccess = (event) => { callback(null, event.target.result); };
+      req.onsuccess = (event) => callback(null, event.target.result);
       req.onerror = (e) => {
         callback(e.target.error);
         e.preventDefault();
@@ -222,7 +220,7 @@ addToLibrary({
         callback(e);
         return;
       }
-      req.onsuccess = () => { callback(null); };
+      req.onsuccess = (event) => callback();
       req.onerror = (e) => {
         callback(e.target.error);
         e.preventDefault();
@@ -230,7 +228,7 @@ addToLibrary({
     },
     removeRemoteEntry: (store, path, callback) => {
       var req = store.delete(path);
-      req.onsuccess = () => { callback(null); };
+      req.onsuccess = (event) => callback();
       req.onerror = (e) => {
         callback(e.target.error);
         e.preventDefault();

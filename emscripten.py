@@ -21,6 +21,7 @@ import shutil
 import sys
 
 from tools import building
+from tools import config
 from tools import diagnostics
 from tools import js_manipulation
 from tools import shared
@@ -280,7 +281,7 @@ def create_named_globals(metadata):
   return '\n'.join(named_globals)
 
 
-def emscript(in_wasm, out_wasm, outfile_js, memfile, js_syms):
+def emscript(in_wasm, out_wasm, outfile_js, js_syms, finalize=True):
   # Overview:
   #   * Run wasm-emscripten-finalize to extract metadata and modify the binary
   #     to use emscripten's wasm<->JS ABI
@@ -293,7 +294,13 @@ def emscript(in_wasm, out_wasm, outfile_js, memfile, js_syms):
     # set file locations, so that JS glue can find what it needs
     settings.WASM_BINARY_FILE = js_manipulation.escape_for_js_string(os.path.basename(out_wasm))
 
-  metadata = finalize_wasm(in_wasm, out_wasm, memfile, js_syms)
+  if finalize:
+    metadata = finalize_wasm(in_wasm, out_wasm, js_syms)
+  else:
+    # Skip finalize and only extract the metadata.
+    if in_wasm != out_wasm:
+      shutil.copy(in_wasm, out_wasm)
+    metadata = get_metadata(in_wasm, out_wasm, False, [])
 
   if settings.RELOCATABLE and settings.MEMORY64 == 2:
     metadata.imports += ['__memory_base32']
@@ -304,7 +311,10 @@ def emscript(in_wasm, out_wasm, outfile_js, memfile, js_syms):
     metadata.function_exports['asyncify_start_rewind'] = 1
     metadata.function_exports['asyncify_stop_rewind'] = 0
 
-  update_settings_glue(out_wasm, metadata)
+  # If the binary has already been finalized the settings have already been
+  # updated and we can skip updating them.
+  if finalize:
+    update_settings_glue(out_wasm, metadata)
 
   if not settings.WASM_BIGINT and metadata.emJsFuncs:
     import_map = {}
@@ -328,7 +338,27 @@ def emscript(in_wasm, out_wasm, outfile_js, memfile, js_syms):
         if len(signature.params) != len(c_sig):
           diagnostics.warning('em-js-i64', 'using 64-bit arguments in EM_JS function without WASM_BIGINT is not yet fully supported: `%s` (%s, %s)', em_js_func, c_sig, signature.params)
 
+  asm_consts = create_asm_consts(metadata)
+  em_js_funcs = create_em_js(metadata)
+
   if settings.SIDE_MODULE:
+    # When building side modules, valid the EM_ASM and EM_JS string by running
+    # them through node.  Without this step, syntax errors are not surfaced
+    # until runtime.
+    # We use subprocess directly here rather than shared.check_call since
+    # check_call doesn't support the `intput` argument.
+    if asm_consts:
+      validate = '\n'.join([f'var tmp = {f};' for _, f in asm_consts])
+      proc = subprocess.run(config.NODE_JS + ['--check', '-'], input=validate.encode('utf-8'))
+      if proc.returncode:
+        exit_with_error(f'EM_ASM function validation failed (node returned {proc.returncode})')
+
+    if em_js_funcs:
+      validate = '\n'.join(em_js_funcs)
+      proc = subprocess.run(config.NODE_JS + ['--check', '-'], input=validate.encode('utf-8'))
+      if proc.returncode:
+        exit_with_error(f'EM_JS function validation failed (node returned {proc.returncode})')
+
     logger.debug('emscript: skipping remaining js glue generation')
     return
 
@@ -388,8 +418,6 @@ def emscript(in_wasm, out_wasm, outfile_js, memfile, js_syms):
     # In regular runtime, atinits etc. exist in the preamble part
     pre = apply_static_code_hooks(forwarded_json, pre)
 
-  asm_consts = create_asm_consts(metadata)
-  em_js_funcs = create_em_js(metadata)
   asm_const_pairs = ['%s: %s' % (key, value) for key, value in asm_consts]
   extra_code = ''
   if asm_const_pairs or settings.MAIN_MODULE:
@@ -420,12 +448,6 @@ def emscript(in_wasm, out_wasm, outfile_js, memfile, js_syms):
     module = None
 
 
-def remove_trailing_zeros(memfile):
-  mem_data = utils.read_binary(memfile)
-  mem_data = mem_data.rstrip(b'\0')
-  utils.write_binary(memfile, mem_data)
-
-
 @ToolchainProfiler.profile()
 def get_metadata(infile, outfile, modify_wasm, args):
   metadata = extract_metadata.extract_metadata(infile)
@@ -444,7 +466,7 @@ def get_metadata(infile, outfile, modify_wasm, args):
   return metadata
 
 
-def finalize_wasm(infile, outfile, memfile, js_syms):
+def finalize_wasm(infile, outfile, js_syms):
   building.save_intermediate(infile, 'base.wasm')
   args = []
 
@@ -482,10 +504,6 @@ def finalize_wasm(infile, outfile, memfile, js_syms):
       modify_wasm = True
     else:
       args.append('--no-legalize-javascript-ffi')
-  if memfile:
-    args.append(f'--separate-data-segments={memfile}')
-    args.append(f'--global-base={settings.GLOBAL_BASE}')
-    modify_wasm = True
   if settings.SIDE_MODULE:
     args.append('--side-module')
   if settings.STACK_OVERFLOW_CHECK >= 2:
@@ -534,13 +552,6 @@ def finalize_wasm(infile, outfile, memfile, js_syms):
 
   if settings.GENERATE_SOURCE_MAP:
     building.save_intermediate(outfile + '.map', 'post_finalize.map')
-
-  if memfile:
-    # we have a separate .mem file. binaryen did not strip any trailing zeros,
-    # because it's an ABI question as to whether it is valid to do so or not.
-    # we can do so here, since we make sure to zero out that memory (even in
-    # the dynamic linking case, our loader zeros it out)
-    remove_trailing_zeros(memfile)
 
   expected_exports = set(settings.EXPORTED_FUNCTIONS)
   expected_exports.update(asmjs_mangle(s) for s in settings.REQUIRED_EXPORTS)
@@ -601,6 +612,7 @@ def type_to_sig(type):
     webassembly.Type.I64: 'j',
     webassembly.Type.F32: 'f',
     webassembly.Type.F64: 'd',
+    webassembly.Type.EXTERNREF: 'e',
     webassembly.Type.VOID: 'v'
   }[type]
 
@@ -729,8 +741,9 @@ def create_sending(metadata, library_symbols):
 
   sorted_items = sorted(send_items_map.items())
   prefix = ''
-  if settings.USE_CLOSURE_COMPILER:
-    # This prevents closure compiler from minifying the field names in this object.
+  if settings.MAYBE_CLOSURE_COMPILER:
+    # This prevents closure compiler from minifying the field names in this
+    # object.
     prefix = '/** @export */\n  '
   return '{\n  ' + ',\n  '.join(f'{prefix}{k}: {v}' for k, v in sorted_items) + '\n}'
 
@@ -872,6 +885,9 @@ def create_pointer_conversion_wrappers(metadata):
     'stackAlloc': 'pp',
     'emscripten_builtin_malloc': 'pp',
     'malloc': 'pp',
+    'memalign': 'ppp',
+    'memcmp': '_ppp',
+    'memcpy': 'pppp',
     '__getTypeName': 'pp',
     'setThrew': '_p',
     'free': '_p',
@@ -890,10 +906,15 @@ def create_pointer_conversion_wrappers(metadata):
     '__main_argc_argv': '__PP',
     'emscripten_stack_set_limits': '_pp',
     '__set_stack_limits': '_pp',
+    '__set_thread_state': '_p___',
     '__cxa_can_catch': '_ppp',
     '__cxa_increment_exception_refcount': '_p',
     '__cxa_decrement_exception_refcount': '_p',
     '_wasmfs_write_file': '_ppp',
+    '_wasmfs_mknod': '_p__',
+    '_wasmfs_get_cwd': 'p_',
+    '_wasmfs_identify': '_p',
+    '_wasmfs_read_file': 'pp',
     '__dl_seterr': '_pp',
     '_emscripten_run_on_main_thread_js': '___p_',
     '_emscripten_proxy_execute_task_queue': '_p',
@@ -910,6 +931,14 @@ def create_pointer_conversion_wrappers(metadata):
     'asyncify_start_rewind': '_p',
     'asyncify_start_unwind': '_p',
     '__get_exception_message': '_ppp',
+    'stbi_image_free': 'vp',
+    'stbi_load': 'ppppp_',
+    'stbi_load_from_memory': 'pp_ppp_',
+    'emscripten_proxy_finish': '_p',
+    'emscripten_proxy_execute_queue': '_p',
+    '_emval_coro_resume': '_pp',
+    'emscripten_main_runtime_thread_id': 'p',
+    '_emscripten_set_offscreencanvas_size_on_thread': '_pp__',
   }
 
   for function in settings.SIGNATURE_CONVERSIONS:
@@ -949,5 +978,5 @@ function applySignatureConversions(wasmExports) {
   return wrappers
 
 
-def run(in_wasm, out_wasm, outfile_js, memfile, js_syms):
-  emscript(in_wasm, out_wasm, outfile_js, memfile, js_syms)
+def run(in_wasm, out_wasm, outfile_js, js_syms, finalize=True):
+  emscript(in_wasm, out_wasm, outfile_js, js_syms, finalize)

@@ -56,6 +56,8 @@ MINIMAL_TASKS = [
     'libemmalloc-memvalidate',
     'libemmalloc-verbose',
     'libemmalloc-memvalidate-verbose',
+    'libmimalloc',
+    'libmimalloc-mt',
     'libGL',
     'libhtml5',
     'libsockets',
@@ -198,7 +200,7 @@ def main():
     settings.LTO = args.lto
 
   if args.verbose:
-    shared.PRINT_STAGES = True
+    shared.PRINT_SUBPROCS = True
 
   if args.pic:
     settings.RELOCATABLE = 1

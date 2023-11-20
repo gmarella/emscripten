@@ -28,10 +28,14 @@ extern "C" {
 
 // An external JS implementation that is efficient for very large copies, using
 // HEAPU8.set()
-void emscripten_memcpy_big(void* __restrict__ dest,
+void emscripten_memcpy_js(void* __restrict__ dest,
                            const void* __restrict__ src,
-                           size_t n) EM_IMPORT(emscripten_memcpy_big);
-void emscripten_memset_big(void* ptr, char value, size_t n);
+                           size_t n) EM_IMPORT(emscripten_memcpy_js);
+
+void* emscripten_memcpy_bulkmem(void* __restrict__ dest,
+                                const void* __restrict__ src,
+                                size_t n);
+void* emscripten_memset_bulkmem(void* ptr, char value, size_t n);
 
 void emscripten_notify_memory_growth(size_t memory_index);
 
@@ -120,6 +124,8 @@ char* _emscripten_sanitizer_get_option(const char* name);
 void _emscripten_fs_load_embedded_files(void* ptr);
 
 void _emscripten_throw_longjmp(void);
+
+void _emscripten_runtime_keepalive_clear();
 
 void __handle_stack_overflow(void* addr);
 

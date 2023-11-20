@@ -108,6 +108,9 @@ var STACK_SIZE = 64*1024;
 //  * emmalloc-verbose - use emmalloc with assertions + verbose logging.
 //  * emmalloc-memvalidate-verbose - use emmalloc with assertions + heap
 //                                   consistency checking + verbose logging.
+//  * mimalloc - a powerful mulithreaded allocator. This is recommended in
+//               large applications that have malloc() contention, but it is
+//               larger and uses more memory.
 //  * none     - no malloc() implementation is provided, but you must implement
 //               malloc() and free() yourself.
 // dlmalloc is necessary for split memory and other special modes, and will be
@@ -139,6 +142,10 @@ var MALLOC = "dlmalloc";
 //      nothing changes. But if you do specify it, it will have an effect now,
 //      which it did not previously. If you don't want that, just stop passing
 //      it in at link time.
+//
+// Note that this setting does not affect the behavior of operator new in C++.
+// This function will always abort on allocation failure if exceptions are disabled.
+// If you want new to return 0 on failure, use it with std::nothrow.
 //
 // [link]
 var ABORTING_MALLOC = true;
@@ -247,6 +254,11 @@ var ALLOW_TABLE_GROWTH = false;
 // enables the --low-memory-unused pass
 // [link]
 var GLOBAL_BASE = 1024;
+
+// Where where table slots (function addresses) are allocated.
+// This must be at least 1 to reserve the zero slot for the null pointer.
+// [link]
+var TABLE_BASE = 1;
 
 // Whether closure compiling is being run on this output
 // [link]
@@ -1116,6 +1128,7 @@ var LINKABLE = false;
 //   * DEFAULT_TO_CXX is disabled.
 //   * USE_GLFW is set to 0 rather than 2 by default.
 //   * ALLOW_UNIMPLEMENTED_SYSCALLS is disabled.
+//   * INCOMING_MODULE_JS_API is set to empty by default.
 // [compile+link]
 var STRICT = false;
 
@@ -1306,9 +1319,8 @@ var EMSCRIPTEN_TRACING = false;
 // Specify the GLFW version that is being linked against.  Only relevant, if you
 // are linking against the GLFW library.  Valid options are 2 for GLFW2 and 3
 // for GLFW3.
-// This defaults to 0 in either MINIMAL_RUNTIME or STRICT modes.
 // [link]
-var USE_GLFW = 2;
+var USE_GLFW = 0;
 
 // Whether to use compile code to WebAssembly. Set this to 0 to compile to JS
 // instead of wasm.
@@ -1759,10 +1771,10 @@ var AUTO_NATIVE_LIBRARIES = true;
 // versions >= MIN_FIREFOX_VERSION
 // are desired to work. Pass -sMIN_FIREFOX_VERSION=majorVersion to drop support
 // for Firefox versions older than < majorVersion.
-// Firefox ESR 68 was released on July 9, 2019.
+// Firefox 79 was released on 2020-07-28.
 // MAX_INT (0x7FFFFFFF, or -1) specifies that target is not supported.
 // [link]
-var MIN_FIREFOX_VERSION = 68;
+var MIN_FIREFOX_VERSION = 79;
 
 // Specifies the oldest version of desktop Safari to target. Version is encoded
 // in MMmmVV, e.g. 70101 denotes Safari 7.1.1.
@@ -1801,10 +1813,10 @@ var MIN_EDGE_VERSION = 0x7FFFFFFF;
 
 // Specifies the oldest version of Chrome. E.g. pass -sMIN_CHROME_VERSION=58 to
 // drop support for Chrome 57 and older.
-// Chrome 75.0.3770 was released on 2019-06-04
+// Chrome 85 was released on 2020-08-25.
 // MAX_INT (0x7FFFFFFF, or -1) specifies that target is not supported.
 // [link]
-var MIN_CHROME_VERSION = 75;
+var MIN_CHROME_VERSION = 85;
 
 // Specifies minimum node version to target for the generated code.  This is
 // distinct from the minimum version required run the emscripten compiler.
@@ -1935,9 +1947,9 @@ var USE_OFFSET_CONVERTER = false;
 var LOAD_SOURCE_MAP = false;
 
 // Default to c++ mode even when run as `emcc` rather then `emc++`.
-// When this is disabled `em++` is required when compiling and linking C++
-// programs. This which matches the behaviour of gcc/g++ and clang/clang++.
-// [compile+link]
+// When this is disabled `em++` is required linking C++ programs. Disabling
+// this will match the behaviour of gcc/g++ and clang/clang++.
+// [link]
 var DEFAULT_TO_CXX = true;
 
 // While LLVM's wasm32 has long double = float128, we don't support printing

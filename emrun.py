@@ -770,7 +770,7 @@ def get_cpu_info():
       all_info = check_output(['cat', '/proc/cpuinfo']).strip()
       for line in all_info.split("\n"):
         if 'model name' in line:
-          cpu_name = re.sub('.*model name.*:', '', line, 1).strip()
+          cpu_name = re.sub('.*model name.*:', '', line, count=1).strip()
       lscpu = check_output(['lscpu'])
       frequency = int(float(re.search('CPU MHz: (.*)', lscpu).group(1).strip()) + 0.5)
       sockets = int(re.search(r'Socket\(s\): (.*)', lscpu).group(1).strip())
@@ -1298,7 +1298,7 @@ def list_pc_browsers():
   logi('')
   for browser in browsers:
     browser_exe = find_browser(browser)
-    if type(browser_exe) == list:
+    if type(browser_exe) is list:
       browser_exe = browser_exe[0]
     if browser_exe:
       logi('  - ' + browser + ': ' + browser_display_name(browser_exe) + ' ' + get_executable_version(browser_exe))
@@ -1646,13 +1646,9 @@ def run():
         loge("Running on Android requires that you explicitly specify the browser to run with --browser <id>. Run emrun --android --list_browsers to obtain a list of installed browsers you can use.")
         return 1
       elif options.browser == 'firefox':
-        browser_app = 'org.mozilla.firefox/.App'
-      elif options.browser == 'firefox_beta':
-        browser_app = 'org.mozilla.firefox_beta/.App'
-      elif options.browser == 'firefox_aurora' or options.browser == 'fennec_aurora':
-        browser_app = 'org.mozilla.fennec_aurora/.App'
-      elif options.browser == 'firefox_nightly' or options.browser == 'fennec':
-        browser_app = 'org.mozilla.fennec/.App'
+        browser_app = 'org.mozilla.firefox/org.mozilla.gecko.BrowserApp'
+      elif options.browser == 'firefox_nightly' or options.browser == 'fenix':
+        browser_app = 'org.mozilla.fenix/org.mozilla.gecko.BrowserApp'
       elif options.browser == 'chrome':
         browser_app = 'com.android.chrome/com.google.android.apps.chrome.Main'
       elif options.browser == 'chrome_beta':
@@ -1661,14 +1657,10 @@ def run():
         browser_app = 'com.chrome.dev/com.google.android.apps.chrome.Main'
       elif options.browser == 'chrome_canary':
         browser_app = 'com.chrome.canary/com.google.android.apps.chrome.Main'
-      elif options.browser == 'opera':
-        browser_app = 'com.opera.browser/com.opera.Opera'
-      elif options.browser == 'opera_mini':
-        # Launching the URL works, but page seems to never load (Fails with 'Network problem' even when other browsers work)
-        browser_app = 'com.opera.mini.android/.Browser'
-      elif options.browser == 'dolphin':
-        # Current stable Dolphin as of 12/2013 does not have WebGL support.
-        browser_app = 'mobi.mgeek.TunnyBrowser/.BrowserActivity'
+      elif '.' in options.browser and '/' in options.browser:
+        # Browser command line contains both '.' and '/', so it looks like a string of form 'package/activity', use that
+        # as the browser.
+        browser_app = options.browser
       else:
         loge("Don't know how to launch browser " + options.browser + ' on Android!')
         return 1
@@ -1738,11 +1730,16 @@ def run():
 
     def run(cmd):
       logi(str(cmd))
-      subprocess.call(cmd)
+      subprocess.check_call(cmd)
 
-    run(['adb', 'shell', 'rm', '-rf', '/mnt/sdcard/safe_firefox_profile'])
-    run(['adb', 'shell', 'mkdir', '/mnt/sdcard/safe_firefox_profile'])
-    run(['adb', 'push', os.path.join(profile_dir, 'prefs.js'), '/mnt/sdcard/safe_firefox_profile/prefs.js'])
+    try:
+      run(['adb', 'shell', 'rm', '-rf', '/mnt/sdcard/safe_firefox_profile'])
+      run(['adb', 'shell', 'mkdir', '/mnt/sdcard/safe_firefox_profile'])
+      run(['adb', 'push', os.path.join(profile_dir, 'prefs.js'), '/mnt/sdcard/safe_firefox_profile/prefs.js'])
+    except Exception as e:
+      loge('Creating Firefox profile prefs.js file to internal storage in /mnt/sdcard failed with error ' + str(e) + '!')
+      loge('Try running without --safe_firefox_profile flag if unattended execution mode is not important, or')
+      loge('enable rooted debugging on the Android device to allow adb to write files to /mnt/sdcard.')
     browser += ['--es', 'args', '"--profile /mnt/sdcard/safe_firefox_profile"']
 
   # Create temporary Firefox profile to run the page with. This is important to

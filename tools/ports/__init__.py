@@ -90,7 +90,7 @@ def maybe_copy(src, dest):
   headers will be "re-installed" but we skip the actual filesystem mods
   to avoid racing with other processes that might be reading these files.
   """
-  if os.path.exists(dest) and utils.read_file(src) == utils.read_file(dest):
+  if os.path.exists(dest) and utils.read_binary(src) == utils.read_binary(dest):
     return
   shutil.copyfile(src, dest)
 
@@ -144,7 +144,7 @@ class Ports:
           if ext in ('.c', '.cpp') and not any((excluded in f) for excluded in exclude_files):
             srcs.append(os.path.join(root, f))
 
-    cflags = system_libs.get_base_cflags() + ['-Werror', '-O2', '-I' + src_dir] + flags
+    cflags = system_libs.get_base_cflags() + ['-O2', '-I' + src_dir] + flags
     for include in includes:
       cflags.append('-I' + include)
 
@@ -169,7 +169,7 @@ class Ports:
         commands.append(cmd)
         objects.append(obj)
 
-      system_libs.run_build_commands(commands)
+      system_libs.run_build_commands(commands, num_inputs=len(srcs))
       system_libs.create_lib(output_path, objects)
 
     return output_path
@@ -390,8 +390,8 @@ def get_libs(settings):
   for port in dependency_order(needed):
     if port.needed(settings):
       port.linker_setup(Ports, settings)
-      # ports return their output files, which will be linked, or a txt file
-      ret += [f for f in port.get(Ports, settings, shared) if not f.endswith('.txt')]
+      # port.get returns a list of libraries to link
+      ret += port.get(Ports, settings, shared)
 
   ret.reverse()
   return ret

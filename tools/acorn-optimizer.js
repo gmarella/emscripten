@@ -319,7 +319,16 @@ function runJSDCE(ast, aggressive) {
           const old = node.declarations;
           let removedHere = 0;
           node.declarations = node.declarations.filter((node) => {
-            const curr = node.id.name;
+            assert(node.type === 'VariableDeclarator');
+            const id = node.id;
+            if (id.type === 'ObjectPattern' || id.type === 'ArrayPattern') {
+              // TODO: DCE into object patterns, that is, things like
+              //         let { a, b } = ..
+              //         let [ a, b ] = ..
+              return true;
+            }
+            assert(id.type === 'Identifier');
+            const curr = id.name;
             const value = node.init;
             const keep = !(curr in names) || (value && hasSideEffects(value));
             if (!keep) removedHere = 1;
@@ -361,12 +370,30 @@ function runJSDCE(ast, aggressive) {
         ensureData(scopes[scopes.length - 1], node.id.name).def = 1;
       }
       const scope = {};
-      node.params.forEach((param) => {
-        const name = param.name;
-        ensureData(scope, name).def = 1;
-        scope[name].param = 1;
-      });
       scopes.push(scope);
+      node.params.forEach(function traverse(param) {
+        if (param.type === 'RestElement') {
+          param = param.argument;
+        }
+        if (param.type === 'AssignmentPattern') {
+          c(param.right);
+          param = param.left;
+        }
+        if (param.type === 'ArrayPattern') {
+          for (var elem of param.elements) {
+            traverse(elem);
+          }
+        } else if (param.type === 'ObjectPattern') {
+          for (var prop of param.properties) {
+            traverse(prop.key);
+          }
+        } else {
+          assert(param.type === 'Identifier', param.type);
+          const name = param.name;
+          ensureData(scope, name).def = 1;
+          scope[name].param = 1;
+        }
+      });
       c(node.body);
       // we can ignore self-references, i.e., references to ourselves inside
       // ourselves, for named defined (defun) functions
@@ -390,8 +417,25 @@ function runJSDCE(ast, aggressive) {
 
     recursiveWalk(ast, {
       VariableDeclarator(node, c) {
-        const name = node.id.name;
-        ensureData(scopes[scopes.length - 1], name).def = 1;
+        const id = node.id;
+        if (id.type === 'ObjectPattern') {
+          id.properties.forEach((node) => {
+            const value = node.value;
+            assert(value.type === 'Identifier');
+            const name = value.name;
+            ensureData(scopes[scopes.length - 1], name).def = 1;
+          });
+        } else if (id.type === 'ArrayPattern') {
+          id.elements.forEach((node) => {
+            assert(node.type === 'Identifier');
+            const name = node.name;
+            ensureData(scopes[scopes.length - 1], name).def = 1;
+          });
+        } else {
+          assert(id.type === 'Identifier');
+          const name = id.name;
+          ensureData(scopes[scopes.length - 1], name).def = 1;
+        }
         if (node.init) c(node.init);
       },
       ObjectExpression(node, c) {
@@ -829,7 +873,7 @@ function emitDCEGraph(ast) {
   // must find the info we need
   assert(
     foundWasmImportsAssign,
-    'could not find the assigment to "wasmImports". perhaps --pre-js or --post-js code moved it out of the global scope? (things like that should be done after emcc runs, as they do not need to be run through the optimizer which is the special thing about --pre-js/--post-js code)'
+    'could not find the assigment to "wasmImports". perhaps --pre-js or --post-js code moved it out of the global scope? (things like that should be done after emcc runs, as they do not need to be run through the optimizer which is the special thing about --pre-js/--post-js code)',
   );
   // Read exports that were declared in extraInfo
   if (extraInfo) {
@@ -1010,7 +1054,7 @@ function applyDCEGraphRemovals(ast) {
 
 // Need a parser to pass to acorn.Node constructor.
 // Create it once and reuse it.
-const stubParser = new acorn.Parser({ecmaVersion: 2020});
+const stubParser = new acorn.Parser({ecmaVersion: 2021});
 
 function createNode(props) {
   const node = new acorn.Node(stubParser);
@@ -1785,7 +1829,7 @@ function minifyGlobals(ast) {
     ast.type === 'Program' &&
       ast.body.length === 1 &&
       ast.body[0].type === 'FunctionDeclaration' &&
-      ast.body[0].id.name === 'instantiate'
+      ast.body[0].id.name === 'instantiate',
   );
   const fun = ast.body[0];
 
@@ -1890,7 +1934,7 @@ function reattachComments(ast, comments) {
       if (node.start && node.start.pos) {
         symbols.push(node);
       }
-    })
+    }),
   );
 
   // Sort them by ascending line number
@@ -1922,8 +1966,8 @@ function reattachComments(ast, comments) {
         false,
         undefined,
         undefined,
-        '0'
-      )
+        '0',
+      ),
     );
   }
 }
@@ -1974,7 +2018,7 @@ let ast;
 try {
   ast = acorn.parse(input, {
     // Keep in sync with --language_in that we pass to closure in building.py
-    ecmaVersion: 2020,
+    ecmaVersion: 2021,
     preserveParens: closureFriendly,
     onComment: closureFriendly ? sourceComments : undefined,
     sourceType: exportES6 ? 'module' : 'script',

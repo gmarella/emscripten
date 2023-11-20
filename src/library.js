@@ -58,7 +58,15 @@ addToLibrary({
 
 #if !MINIMAL_RUNTIME
   $exitJS__docs: '/** @param {boolean|number=} implicit */',
-  $exitJS__deps: ['proc_exit'],
+  $exitJS__deps: [
+    'proc_exit',
+#if ASSERTIONS || EXIT_RUNTIME
+    '$keepRuntimeAlive',
+#endif
+#if PTHREADS_DEBUG
+    '$runtimeKeepaliveCounter',
+#endif
+  ],
   $exitJS: (status, implicit) => {
     EXITSTATUS = status;
 
@@ -73,7 +81,7 @@ addToLibrary({
       assert(!implicit);
 #endif
 #if PTHREADS_DEBUG
-      dbg(`Pthread ${ptrToString(_pthread_self())} called exit(), posting exitOnMainThread.`);
+      dbg(`Pthread ${ptrToString(_pthread_self())} called exit(${status}), posting exitOnMainThread.`);
 #endif
       // When running in a pthread we propagate the exit back to the main thread
       // where it can decide if the whole process should be shut down or not.
@@ -83,7 +91,7 @@ addToLibrary({
       throw 'unwind';
     }
 #if PTHREADS_DEBUG
-    err(`main thread called exit: keepRuntimeAlive=${keepRuntimeAlive()} (counter=${runtimeKeepaliveCounter})`);
+    err(`main thread called exit(${status}): keepRuntimeAlive=${keepRuntimeAlive()} (counter=${runtimeKeepaliveCounter})`);
 #endif // PTHREADS_DEBUG
 #endif // PTHREADS
 
@@ -159,9 +167,9 @@ addToLibrary({
   // it. Returns 1 on success, 0 on error.
   $growMemory: (size) => {
     var b = wasmMemory.buffer;
-    var pages = (size - b.byteLength + 65535) >>> 16;
+    var pages = (size - b.byteLength + {{{ WASM_PAGE_SIZE - 1 }}}) / {{{ WASM_PAGE_SIZE }}};
 #if RUNTIME_DEBUG
-    dbg(`emscripten_resize_heap: ${size} (+${size - b.byteLength} bytes / ${pages} pages)`);
+    dbg(`growMemory: ${size} (+${size - b.byteLength} bytes / ${pages} pages)`);
 #endif
 #if MEMORYPROFILER
     var oldHeapSize = b.byteLength;
@@ -249,7 +257,7 @@ addToLibrary({
     var maxHeapSize = getHeapMax();
     if (requestedSize > maxHeapSize) {
 #if ASSERTIONS
-      err(`Cannot enlarge memory, asked to go up to ${requestedSize} bytes, but the limit is ${maxHeapSize} bytes!`);
+      err(`Cannot enlarge memory, requested ${requestedSize} bytes, but the limit is ${maxHeapSize} bytes!`);
 #endif
 #if ABORTING_MALLOC
       abortOnCannotGrowMemory(requestedSize);
@@ -385,8 +393,8 @@ addToLibrary({
   $ENV: {},
 
   // In -Oz builds, we replace memcpy() altogether with a non-unrolled wasm
-  // variant, so we should never emit emscripten_memcpy_big() in the build.
-  // In STANDALONE_WASM we avoid the emscripten_memcpy_big dependency so keep
+  // variant, so we should never emit emscripten_memcpy_js() in the build.
+  // In STANDALONE_WASM we avoid the emscripten_memcpy_js dependency so keep
   // the wasm file standalone.
   // In BULK_MEMORY mode we include native versions of these functions based
   // on memory.fill and memory.copy.
@@ -407,11 +415,11 @@ addToLibrary({
   //   AppleWebKit/605.1.15 Safari/604.1 Version/13.0.4 iPhone OS 13_3 on iPhone 6s with iOS 13.3
   //   AppleWebKit/605.1.15 Version/13.0.3 Intel Mac OS X 10_15_1 on Safari 13.0.3 (15608.3.10.1.4) on macOS Catalina 10.15.1
   // Hence the support status of .copyWithin() for Safari version range [10.0.0, 10.1.0] is unknown.
-  emscripten_memcpy_big: `= Uint8Array.prototype.copyWithin
+  emscripten_memcpy_js: `= Uint8Array.prototype.copyWithin
     ? (dest, src, num) => HEAPU8.copyWithin(dest, src, src + num)
     : (dest, src, num) => HEAPU8.set(HEAPU8.subarray(src, src+num), dest)`,
 #else
-  emscripten_memcpy_big: (dest, src, num) => HEAPU8.copyWithin(dest, src, src + num),
+  emscripten_memcpy_js: (dest, src, num) => HEAPU8.copyWithin(dest, src, src + num),
 #endif
 
 #endif
@@ -429,7 +437,7 @@ addToLibrary({
   // ==========================================================================
 
   _mktime_js__i53abi: true,
-  _mktime_js__deps: ['$ydayFromDate'],
+  _mktime_js__deps: ['$ydayFromDate', '$setErrNo'],
   _mktime_js: (tmPtr) => {
     var date = new Date({{{ makeGetValue('tmPtr', C_STRUCTS.tm.tm_year, 'i32') }}} + 1900,
                         {{{ makeGetValue('tmPtr', C_STRUCTS.tm.tm_mon, 'i32') }}},
@@ -469,7 +477,13 @@ addToLibrary({
     {{{ makeSetValue('tmPtr', C_STRUCTS.tm.tm_mon, 'date.getMonth()', 'i32') }}};
     {{{ makeSetValue('tmPtr', C_STRUCTS.tm.tm_year, 'date.getYear()', 'i32') }}};
 
-    return date.getTime() / 1000;
+    var timeMs = date.getTime();
+    if (isNaN(timeMs)) {
+      setErrNo({{{ cDefs.EOVERFLOW }}});
+      return -1;
+    }
+    // Return time in microseconds
+    return timeMs / 1000;
   },
 
   _gmtime_js__i53abi: true,
@@ -520,7 +534,7 @@ addToLibrary({
 
     var yday = ydayFromDate(date)|0;
     {{{ makeSetValue('tmPtr', C_STRUCTS.tm.tm_yday, 'yday', 'i32') }}};
-    {{{ makeSetValue('tmPtr', C_STRUCTS.tm.tm_gmtoff, '-(date.getTimezoneOffset() * 60)', 'i32') }}};
+    {{{ makeSetValue('tmPtr', C_STRUCTS.tm.tm_gmtoff, '-(date.getTimezoneOffset() * 60)', LONG_TYPE) }}};
 
     // Attention: DST is in December in South, and some regions don't have DST at all.
     var start = new Date(date.getFullYear(), 0, 1);
@@ -635,9 +649,7 @@ addToLibrary({
   $MONTH_DAYS_REGULAR_CUMULATIVE: [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334],
   $MONTH_DAYS_LEAP_CUMULATIVE: [0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335],
 
-  $isLeapYear: (year) => {
-      return year%4 === 0 && (year%100 !== 0 || year%400 === 0);
-  },
+  $isLeapYear: (year) => year%4 === 0 && (year%100 !== 0 || year%400 === 0),
 
   $ydayFromDate__deps: ['$isLeapYear', '$MONTH_DAYS_LEAP_CUMULATIVE', '$MONTH_DAYS_REGULAR_CUMULATIVE'],
   $ydayFromDate: (date) => {
@@ -693,7 +705,7 @@ addToLibrary({
     // size_t strftime(char *restrict s, size_t maxsize, const char *restrict format, const struct tm *restrict timeptr);
     // http://pubs.opengroup.org/onlinepubs/009695399/functions/strftime.html
 
-    var tm_zone = {{{ makeGetValue('tm', C_STRUCTS.tm.tm_zone, 'i32') }}};
+    var tm_zone = {{{ makeGetValue('tm', C_STRUCTS.tm.tm_zone, '*') }}};
 
     var date = {
       tm_sec: {{{ makeGetValue('tm', C_STRUCTS.tm.tm_sec, 'i32') }}},
@@ -705,9 +717,10 @@ addToLibrary({
       tm_wday: {{{ makeGetValue('tm', C_STRUCTS.tm.tm_wday, 'i32') }}},
       tm_yday: {{{ makeGetValue('tm', C_STRUCTS.tm.tm_yday, 'i32') }}},
       tm_isdst: {{{ makeGetValue('tm', C_STRUCTS.tm.tm_isdst, 'i32') }}},
-      tm_gmtoff: {{{ makeGetValue('tm', C_STRUCTS.tm.tm_gmtoff, 'i32') }}},
+      tm_gmtoff: {{{ makeGetValue('tm', C_STRUCTS.tm.tm_gmtoff, LONG_TYPE) }}},
       tm_zone: tm_zone ? UTF8ToString(tm_zone) : ''
     };
+    {{{ from64('date.tm_gmtoff') }}}
 
     var pattern = UTF8ToString(format);
 
@@ -959,64 +972,64 @@ addToLibrary({
 
     // reduce number of matchers
     var EQUIVALENT_MATCHERS = {
-      '%A':  '%a',
-      '%B':  '%b',
-      '%c':  '%a %b %d %H:%M:%S %Y',
-      '%D':  '%m\\/%d\\/%y',
-      '%e':  '%d',
-      '%F':  '%Y-%m-%d',
-      '%h':  '%b',
-      '%R':  '%H\\:%M',
-      '%r':  '%I\\:%M\\:%S\\s%p',
-      '%T':  '%H\\:%M\\:%S',
-      '%x':  '%m\\/%d\\/(?:%y|%Y)',
-      '%X':  '%H\\:%M\\:%S'
+      'A':  '%a',
+      'B':  '%b',
+      'c':  '%a %b %d %H:%M:%S %Y',
+      'D':  '%m\\/%d\\/%y',
+      'e':  '%d',
+      'F':  '%Y-%m-%d',
+      'h':  '%b',
+      'R':  '%H\\:%M',
+      'r':  '%I\\:%M\\:%S\\s%p',
+      'T':  '%H\\:%M\\:%S',
+      'x':  '%m\\/%d\\/(?:%y|%Y)',
+      'X':  '%H\\:%M\\:%S'
     };
-    for (var matcher in EQUIVALENT_MATCHERS) {
-      pattern = pattern.replace(matcher, EQUIVALENT_MATCHERS[matcher]);
-    }
-
     // TODO: take care of locale
 
     var DATE_PATTERNS = {
-      /* weeday name */     '%a': '(?:Sun(?:day)?)|(?:Mon(?:day)?)|(?:Tue(?:sday)?)|(?:Wed(?:nesday)?)|(?:Thu(?:rsday)?)|(?:Fri(?:day)?)|(?:Sat(?:urday)?)',
-      /* month name */      '%b': '(?:Jan(?:uary)?)|(?:Feb(?:ruary)?)|(?:Mar(?:ch)?)|(?:Apr(?:il)?)|May|(?:Jun(?:e)?)|(?:Jul(?:y)?)|(?:Aug(?:ust)?)|(?:Sep(?:tember)?)|(?:Oct(?:ober)?)|(?:Nov(?:ember)?)|(?:Dec(?:ember)?)',
-      /* century */         '%C': '\\d\\d',
-      /* day of month */    '%d': '0[1-9]|[1-9](?!\\d)|1\\d|2\\d|30|31',
-      /* hour (24hr) */     '%H': '\\d(?!\\d)|[0,1]\\d|20|21|22|23',
-      /* hour (12hr) */     '%I': '\\d(?!\\d)|0\\d|10|11|12',
-      /* day of year */     '%j': '00[1-9]|0?[1-9](?!\\d)|0?[1-9]\\d(?!\\d)|[1,2]\\d\\d|3[0-6]\\d',
-      /* month */           '%m': '0[1-9]|[1-9](?!\\d)|10|11|12',
-      /* minutes */         '%M': '0\\d|\\d(?!\\d)|[1-5]\\d',
-      /* whitespace */      '%n': '\\s',
-      /* AM/PM */           '%p': 'AM|am|PM|pm|A\\.M\\.|a\\.m\\.|P\\.M\\.|p\\.m\\.',
-      /* seconds */         '%S': '0\\d|\\d(?!\\d)|[1-5]\\d|60',
-      /* week number */     '%U': '0\\d|\\d(?!\\d)|[1-4]\\d|50|51|52|53',
-      /* week number */     '%W': '0\\d|\\d(?!\\d)|[1-4]\\d|50|51|52|53',
-      /* weekday number */  '%w': '[0-6]',
-      /* 2-digit year */    '%y': '\\d\\d',
-      /* 4-digit year */    '%Y': '\\d\\d\\d\\d',
-      /* % */               '%%': '%',
-      /* whitespace */      '%t': '\\s',
+      /* weekday name */    'a': '(?:Sun(?:day)?)|(?:Mon(?:day)?)|(?:Tue(?:sday)?)|(?:Wed(?:nesday)?)|(?:Thu(?:rsday)?)|(?:Fri(?:day)?)|(?:Sat(?:urday)?)',
+      /* month name */      'b': '(?:Jan(?:uary)?)|(?:Feb(?:ruary)?)|(?:Mar(?:ch)?)|(?:Apr(?:il)?)|May|(?:Jun(?:e)?)|(?:Jul(?:y)?)|(?:Aug(?:ust)?)|(?:Sep(?:tember)?)|(?:Oct(?:ober)?)|(?:Nov(?:ember)?)|(?:Dec(?:ember)?)',
+      /* century */         'C': '\\d\\d',
+      /* day of month */    'd': '0[1-9]|[1-9](?!\\d)|1\\d|2\\d|30|31',
+      /* hour (24hr) */     'H': '\\d(?!\\d)|[0,1]\\d|20|21|22|23',
+      /* hour (12hr) */     'I': '\\d(?!\\d)|0\\d|10|11|12',
+      /* day of year */     'j': '00[1-9]|0?[1-9](?!\\d)|0?[1-9]\\d(?!\\d)|[1,2]\\d\\d|3[0-6]\\d',
+      /* month */           'm': '0[1-9]|[1-9](?!\\d)|10|11|12',
+      /* minutes */         'M': '0\\d|\\d(?!\\d)|[1-5]\\d',
+      /* whitespace */      'n': ' ',
+      /* AM/PM */           'p': 'AM|am|PM|pm|A\\.M\\.|a\\.m\\.|P\\.M\\.|p\\.m\\.',
+      /* seconds */         'S': '0\\d|\\d(?!\\d)|[1-5]\\d|60',
+      /* week number */     'U': '0\\d|\\d(?!\\d)|[1-4]\\d|50|51|52|53',
+      /* week number */     'W': '0\\d|\\d(?!\\d)|[1-4]\\d|50|51|52|53',
+      /* weekday number */  'w': '[0-6]',
+      /* 2-digit year */    'y': '\\d\\d',
+      /* 4-digit year */    'Y': '\\d\\d\\d\\d',
+      /* whitespace */      't': ' ',
+      /* time zone */       'z': 'Z|(?:[\\+\\-]\\d\\d:?(?:\\d\\d)?)'
     };
 
     var MONTH_NUMBERS = {JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11};
     var DAY_NUMBERS_SUN_FIRST = {SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6};
     var DAY_NUMBERS_MON_FIRST = {MON: 0, TUE: 1, WED: 2, THU: 3, FRI: 4, SAT: 5, SUN: 6};
 
-    for (var datePattern in DATE_PATTERNS) {
-      pattern = pattern.replace(datePattern, '('+datePattern+DATE_PATTERNS[datePattern]+')');
-    }
-
-    // take care of capturing groups
     var capture = [];
-    for (var i=pattern.indexOf('%'); i>=0; i=pattern.indexOf('%')) {
-      capture.push(pattern[i+1]);
-      pattern = pattern.replace(new RegExp('\\%'+pattern[i+1], 'g'), '');
-    }
+    var pattern_out = pattern
+      .replace(/%(.)/g, (m, c) => EQUIVALENT_MATCHERS[c] || m)
+      .replace(/%(.)/g, (_, c) => {
+        let pat = DATE_PATTERNS[c];
+        if (pat){
+          capture.push(c);
+          return `(${pat})`;
+        } else {
+          return c;
+        }
+      })
+      .replace( // any number of space or tab characters match zero or more spaces
+        /\s+/g,'\\s*'
+      );
 
-    var matches = new RegExp('^'+pattern, "i").exec(UTF8ToString(buf))
-    // out(UTF8ToString(buf)+ ' is matched by '+((new RegExp('^'+pattern)).source)+' into: '+JSON.stringify(matches));
+    var matches = new RegExp('^'+pattern_out, "i").exec(UTF8ToString(buf))
 
     function initDate() {
       function fixup(value, min, max) {
@@ -1028,7 +1041,8 @@ addToLibrary({
         day: fixup({{{ makeGetValue('tm', C_STRUCTS.tm.tm_mday, 'i32') }}}, 1, 31),
         hour: fixup({{{ makeGetValue('tm', C_STRUCTS.tm.tm_hour, 'i32') }}}, 0, 23),
         min: fixup({{{ makeGetValue('tm', C_STRUCTS.tm.tm_min, 'i32') }}}, 0, 59),
-        sec: fixup({{{ makeGetValue('tm', C_STRUCTS.tm.tm_sec, 'i32') }}}, 0, 59)
+        sec: fixup({{{ makeGetValue('tm', C_STRUCTS.tm.tm_sec, 'i32') }}}, 0, 59),
+        gmtoff: 0
       };
     };
 
@@ -1155,6 +1169,20 @@ addToLibrary({
         }
       }
 
+      // time zone
+      if ((value = getMatch('z'))) {
+        // GMT offset as either 'Z' or +-HH:MM or +-HH or +-HHMM
+        if (value.toLowerCase() === 'z'){
+          date.gmtoff = 0;
+        } else {          
+          var match = value.match(/^((?:\-|\+)\d\d):?(\d\d)?/);
+          date.gmtoff = match[1] * 3600;
+          if (match[2]) {
+            date.gmtoff += date.gmtoff >0 ? match[2] * 60 : -match[2] * 60
+          }
+        }
+      }
+
       /*
       tm_sec  int seconds after the minute  0-61*
       tm_min  int minutes after the hour  0-59
@@ -1165,6 +1193,7 @@ addToLibrary({
       tm_wday int days since Sunday 0-6
       tm_yday int days since January 1  0-365
       tm_isdst  int Daylight Saving Time flag
+      tm_gmtoff long offset from GMT (seconds)
       */
 
       var fullDate = new Date(date.year, date.month, date.day, date.hour, date.min, date.sec, 0);
@@ -1177,7 +1206,8 @@ addToLibrary({
       {{{ makeSetValue('tm', C_STRUCTS.tm.tm_wday, 'fullDate.getDay()', 'i32') }}};
       {{{ makeSetValue('tm', C_STRUCTS.tm.tm_yday, 'arraySum(isLeapYear(fullDate.getFullYear()) ? MONTH_DAYS_LEAP : MONTH_DAYS_REGULAR, fullDate.getMonth()-1)+fullDate.getDate()-1', 'i32') }}};
       {{{ makeSetValue('tm', C_STRUCTS.tm.tm_isdst, '0', 'i32') }}};
-
+      {{{ makeSetValue('tm', C_STRUCTS.tm.tm_gmtoff, 'date.gmtoff', LONG_TYPE) }}};
+ 
       // we need to convert the matched sequence into an integer array to take care of UTF-8 characters > 0x7F
       // TODO: not sure that intArrayFromString handles all unicode characters correctly
       return buf+intArrayFromString(matches[0]).length-1;
@@ -1244,7 +1274,9 @@ addToLibrary({
   // errno.h
   // ==========================================================================
 
-  $ERRNO_CODES__postset: `ERRNO_CODES = {
+  // We use a string literal here to avoid the string quotes on the object
+  // keys being removed when processed by jsifier.
+  $ERRNO_CODES: `{
     'EPERM': {{{ cDefs.EPERM }}},
     'ENOENT': {{{ cDefs.ENOENT }}},
     'ESRCH': {{{ cDefs.ESRCH }}},
@@ -1366,8 +1398,7 @@ addToLibrary({
     'ENOTRECOVERABLE': {{{ cDefs.ENOTRECOVERABLE }}},
     'EOWNERDEAD': {{{ cDefs.EOWNERDEAD }}},
     'ESTRPIPE': {{{ cDefs.ESTRPIPE }}},
-  };`,
-  $ERRNO_CODES: {},
+  }`,
   $ERRNO_MESSAGES: {
     0: 'Success',
     {{{ cDefs.EPERM }}}: 'Not super-user',
@@ -1813,9 +1844,7 @@ addToLibrary({
 
   gethostbyname__deps: ['$getHostByName'],
   gethostbyname__proxy: 'sync',
-  gethostbyname: (name) => {
-    return getHostByName(UTF8ToString(name));
-  },
+  gethostbyname: (name) => getHostByName(UTF8ToString(name)),
 
   $getHostByName__deps: ['malloc', '$stringToNewUTF8', '$DNS', '$inetPton4'],
   $getHostByName: (name) => {
@@ -2380,8 +2409,8 @@ addToLibrary({
 #endif
     );`,
 #else
-  // Modern environment where performance.now() is supported: (rely on minifier to return true unconditionally from this function)
-  $nowIsMonotonic: 'true;',
+  // Modern environment where performance.now() is supported
+  $nowIsMonotonic: 1,
 #endif
 
   _emscripten_get_now_is_monotonic__internal: true,
@@ -2872,34 +2901,31 @@ addToLibrary({
     while (ch = HEAPU8[sigPtr++]) {
 #if ASSERTIONS
       var chr = String.fromCharCode(ch);
-      var validChars = ['d', 'f', 'i'];
+      var validChars = ['d', 'f', 'i', 'p'];
 #if WASM_BIGINT
       // In WASM_BIGINT mode we support passing i64 values as bigint.
       validChars.push('j');
-#endif
-#if MEMORY64
-      // In MEMORY64 mode we also support passing i64 pointer types which
-      // get automatically converted to int53/Double.
-      validChars.push('p');
 #endif
       assert(validChars.includes(chr), `Invalid character ${ch}("${chr}") in readEmAsmArgs! Use only [${validChars}], and do not specify "v" for void return argument.`);
 #endif
       // Floats are always passed as doubles, so all types except for 'i'
       // are 8 bytes and require alignment.
-      buf += (ch != {{{ charCode('i') }}}) && buf % 8 ? 4 : 0;
-      readEmAsmArgsArray.push(
-#if MEMORY64
-        // Special case for pointers under wasm64 which we read as int53 Numbers.
-        ch == {{{ charCode('p') }}} ?  {{{ makeGetValue('buf', 0, '*') }}} :
+      var wide = (ch != {{{ charCode('i') }}});
+#if !MEMORY64
+      wide &= (ch != {{{ charCode('p') }}});
 #endif
+      buf += wide && (buf % 8) ? 4 : 0;
+      readEmAsmArgsArray.push(
+        // Special case for pointers under wasm64 or CAN_ADDRESS_2GB mode.
+        ch == {{{ charCode('p') }}} ? {{{ makeGetValue('buf', 0, '*') }}} :
 #if WASM_BIGINT
-        ch == {{{ charCode('j') }}} ?  {{{ makeGetValue('buf', 0, 'i64') }}} :
+        ch == {{{ charCode('j') }}} ? {{{ makeGetValue('buf', 0, 'i64') }}} :
 #endif
         ch == {{{ charCode('i') }}} ?
           {{{ makeGetValue('buf', 0, 'i32') }}} :
           {{{ makeGetValue('buf', 0, 'double') }}}
       );
-      buf += ch == {{{ charCode('i') }}} ? 4 : 8;
+      buf += wide ? 8 : 4;
     }
     return readEmAsmArgsArray;
   },
@@ -2909,7 +2935,7 @@ addToLibrary({
   $runEmAsmFunction: (code, sigPtr, argbuf) => {
     var args = readEmAsmArgs(sigPtr, argbuf);
 #if ASSERTIONS
-    if (!ASM_CONSTS.hasOwnProperty(code)) abort(`No EM_ASM constant found at address ${code}`);
+    assert(ASM_CONSTS.hasOwnProperty(code), `No EM_ASM constant found at address ${code}.  The loaded WebAssembly file is likely out of sync with the generated JavaScript.`);
 #endif
     return ASM_CONSTS[code].apply(null, args);
   },
@@ -2952,12 +2978,17 @@ addToLibrary({
     }
 #endif
 #if ASSERTIONS
-    if (!ASM_CONSTS.hasOwnProperty(code)) abort(`No EM_ASM constant found at address ${code}`);
+    assert(ASM_CONSTS.hasOwnProperty(code), `No EM_ASM constant found at address ${code}.  The loaded WebAssembly file is likely out of sync with the generated JavaScript.`);
 #endif
     return ASM_CONSTS[code].apply(null, args);
   },
   emscripten_asm_const_int_sync_on_main_thread__deps: ['$runMainThreadEmAsm'],
   emscripten_asm_const_int_sync_on_main_thread: (code, sigPtr, argbuf) => {
+    return runMainThreadEmAsm(code, sigPtr, argbuf, 1);
+  },
+
+  emscripten_asm_const_ptr_sync_on_main_thread__deps: ['$runMainThreadEmAsm'],
+  emscripten_asm_const_ptr_sync_on_main_thread: (code, sigPtr, argbuf) => {
     return runMainThreadEmAsm(code, sigPtr, argbuf, 1);
   },
 
@@ -3202,7 +3233,7 @@ addToLibrary({
   $wasmTableMirror: [],
 
   $setWasmTableEntry__internal: true,
-  $setWasmTableEntry__deps: ['$wasmTableMirror'],
+  $setWasmTableEntry__deps: ['$wasmTableMirror', '$wasmTable'],
   $setWasmTableEntry: (idx, func) => {
     wasmTable.set(idx, func);
     // With ABORT_ON_WASM_EXCEPTIONS wasmTable.get is overriden to return wrapped
@@ -3212,7 +3243,7 @@ addToLibrary({
   },
 
   $getWasmTableEntry__internal: true,
-  $getWasmTableEntry__deps: ['$wasmTableMirror'],
+  $getWasmTableEntry__deps: ['$wasmTableMirror', '$wasmTable'],
   $getWasmTableEntry: (funcPtr) => {
 #if MEMORY64
     // Function pointers are 64-bit, but wasmTable.get() requires a Number.
@@ -3237,8 +3268,10 @@ addToLibrary({
 
 #else
 
+  $setWasmTableEntry__deps: ['$wasmTable'],
   $setWasmTableEntry: (idx, func) => wasmTable.set(idx, func),
 
+  $getWasmTableEntry__deps: ['$wasmTable'],
   $getWasmTableEntry: (funcPtr) => {
 #if MEMORY64
     // Function pointers are 64-bit, but wasmTable.get() requires a Number.
@@ -3257,9 +3290,22 @@ addToLibrary({
     throw 'unwind';
   },
 
-  emscripten_force_exit__deps: ['exit',
+  _emscripten_runtime_keepalive_clear__proxy: 'sync',
+  _emscripten_runtime_keepalive_clear: () => {
+#if isSymbolNeeded('$noExitRuntime')
+    noExitRuntime = false;
+#endif
+#if !MINIMAL_RUNTIME
+    runtimeKeepaliveCounter = 0;
+#endif
+  },
+
+  emscripten_force_exit__deps: ['exit', '_emscripten_runtime_keepalive_clear',
 #if !EXIT_RUNTIME && ASSERTIONS
     '$warnOnce',
+#endif
+#if !MINIMAL_RUNTIME
+    '$runtimeKeepaliveCounter',
 #endif
   ],
   emscripten_force_exit__proxy: 'sync',
@@ -3270,10 +3316,7 @@ addToLibrary({
 #if !EXIT_RUNTIME && ASSERTIONS
     warnOnce('emscripten_force_exit cannot actually shut down the runtime, as the build does not have EXIT_RUNTIME set');
 #endif
-#if !MINIMAL_RUNTIME
-    noExitRuntime = false;
-    runtimeKeepaliveCounter = 0;
-#endif
+    __emscripten_runtime_keepalive_clear();
     _exit(status);
   },
 
@@ -3366,7 +3409,18 @@ addToLibrary({
 #endif
   },
 
+  $runtimeKeepaliveCounter__internal: true,
+  $runtimeKeepaliveCounter: 0,
+
+  $keepRuntimeAlive__deps: ['$runtimeKeepaliveCounter'],
+#if isSymbolNeeded('$noExitRuntime')
+  $keepRuntimeAlive: () => noExitRuntime || runtimeKeepaliveCounter > 0,
+#else
+  $keepRuntimeAlive: () => runtimeKeepaliveCounter > 0,
+#endif
+
   // Callable in pthread without __proxy needed.
+  $runtimeKeepalivePush__deps: ['$runtimeKeepaliveCounter'],
   $runtimeKeepalivePush__sig: 'v',
   $runtimeKeepalivePush: () => {
     runtimeKeepaliveCounter += 1;
@@ -3375,6 +3429,7 @@ addToLibrary({
 #endif
   },
 
+  $runtimeKeepalivePop__deps: ['$runtimeKeepaliveCounter'],
   $runtimeKeepalivePop__sig: 'v',
   $runtimeKeepalivePop: () => {
 #if ASSERTIONS
@@ -3388,9 +3443,7 @@ addToLibrary({
 
   emscripten_runtime_keepalive_push: '$runtimeKeepalivePush',
   emscripten_runtime_keepalive_pop: '$runtimeKeepalivePop',
-  // keepRuntimeAlive is a runtime function rather than a library function,
-  // so we can't use an alias like we do for the two functions above.
-  emscripten_runtime_keepalive_check: () => keepRuntimeAlive(),
+  emscripten_runtime_keepalive_check: '$keepRuntimeAlive',
 
   // Used to call user callbacks from the embedder / event loop.  For example
   // setTimeout or any other kind of event handler that calls into user case
@@ -3419,9 +3472,12 @@ addToLibrary({
     }
   },
 
-  $maybeExit__deps: ['exit', '$handleException',
+  $maybeExit__deps: ['exit', '$handleException', '$keepRuntimeAlive',
 #if PTHREADS
     '_emscripten_thread_exit',
+#endif
+#if RUNTIME_DEBUG
+    '$runtimeKeepaliveCounter',
 #endif
   ],
   $maybeExit: () => {
@@ -3455,16 +3511,6 @@ addToLibrary({
     func();
   },
 #endif // MINIMAL_RUNTIME
-
-  $safeSetTimeout__deps: ['$callUserCallback'],
-  $safeSetTimeout__docs: '/** @param {number=} timeout */',
-  $safeSetTimeout: (func, timeout) => {
-    {{{ runtimeKeepalivePush() }}}
-    return setTimeout(() => {
-      {{{ runtimeKeepalivePop() }}}
-      callUserCallback(func);
-    }, timeout);
-  },
 
   $asmjsMangle: (x) => {
     var unmangledSymbols = {{{ buildStringArray(WASM_SYSTEM_EXPORTS) }}};
@@ -3521,12 +3567,12 @@ addToLibrary({
   // tell the memory segments where to place themselves
   __memory_base: "new WebAssembly.Global({'value': '{{{ POINTER_WASM_TYPE }}}', 'mutable': false}, {{{ to64(GLOBAL_BASE) }}})",
   // the wasm backend reserves slot 0 for the NULL function pointer
-  __table_base: "new WebAssembly.Global({'value': '{{{ POINTER_WASM_TYPE }}}', 'mutable': false}, {{{ to64(1) }}})",
+  __table_base: "new WebAssembly.Global({'value': '{{{ POINTER_WASM_TYPE }}}', 'mutable': false}, {{{ to64(TABLE_BASE) }}})",
 #if MEMORY64 == 2
   __memory_base32: "new WebAssembly.Global({'value': 'i32', 'mutable': false}, {{{ GLOBAL_BASE }}})",
 #endif
 #if MEMORY64
-  __table_base32: 1,
+  __table_base32: {{{ TABLE_BASE }}},
 #endif
   // To support such allocations during startup, track them on __heap_base and
   // then when the main module is loaded it reads that value and uses it to
@@ -3615,6 +3661,22 @@ addToLibrary({
   $getNativeTypeSize__deps: ['$POINTER_SIZE'],
   $getNativeTypeSize: {{{ getNativeTypeSize }}},
 
+#if RELOCATABLE
+  // In RELOCATABLE mode we create the table in JS.
+  $wasmTable: `=new WebAssembly.Table({
+  'initial': {{{ INITIAL_TABLE }}},
+#if !ALLOW_TABLE_GROWTH
+  'maximum': {{{ INITIAL_TABLE }}},
+#endif
+  'element': 'anyfunc'
+});
+`,
+#else
+  $wasmTable: undefined,
+#endif
+
+  $noExitRuntime: "{{{ makeModuleReceiveExpr('noExitRuntime', !EXIT_RUNTIME) }}}",
+
   // We used to define these globals unconditionally in support code.
   // Instead, we now define them here so folks can pull it in explicitly, on
   // demand.
@@ -3638,7 +3700,7 @@ function autoAddDeps(object, name) {
 #if LEGACY_RUNTIME
 // Library functions that were previously included as runtime functions are
 // automatically included when `LEGACY_RUNTIME` is set.
-DEFAULT_LIBRARY_FUNCS_TO_INCLUDE.push(
+extraLibraryFuncs.push(
   '$addFunction',
   '$removeFunction',
   '$allocate',

@@ -32,13 +32,13 @@ from .shared import asmjs_mangle, DEBUG
 from .shared import LLVM_DWARFDUMP, demangle_c_symbol_name
 from .shared import get_emscripten_temp_dir, exe_suffix, is_c_symbol
 from .utils import WINDOWS
-from .settings import settings
+from .settings import settings, default_setting
 
 logger = logging.getLogger('building')
 
 #  Building
 binaryen_checked = False
-EXPECTED_BINARYEN_VERSION = 114
+EXPECTED_BINARYEN_VERSION = 115
 
 _is_ar_cache: Dict[str, bool] = {}
 # the exports the user requested
@@ -79,6 +79,7 @@ def get_building_env():
   env['PKG_CONFIG_PATH'] = os.environ.get('EM_PKG_CONFIG_PATH', '')
   env['EMSCRIPTEN'] = path_from_root()
   env['PATH'] = cache.get_sysroot_dir('bin') + os.pathsep + env['PATH']
+  env['ACLOCAL_PATH'] = cache.get_sysroot_dir('share/aclocal')
   env['CROSS_COMPILE'] = path_from_root('em') # produces /path/to/emscripten/em , which then can have 'cc', 'ar', etc appended to it
   return env
 
@@ -177,6 +178,15 @@ def lld_flags_for_executable(external_symbols):
   if settings.LINKABLE:
     cmd.append('--export-dynamic')
 
+  if settings.LTO and not settings.EXIT_RUNTIME:
+    # The WebAssembly backend can generate new references to `__cxa_atexit` at
+    # LTO time.  This `-u` flag forces the `__cxa_atexit` symbol to be
+    # included at LTO time.  For other such symbols we exclude them from LTO
+    # and always build them as normal object files, but that would inhibit the
+    # LowerGlobalDtors optimization which allows destructors to be completely
+    # removed when __cxa_atexit is a no-op.
+    cmd.append('-u__cxa_atexit')
+
   c_exports = [e for e in settings.EXPORTED_FUNCTIONS if is_c_symbol(e)]
   # Strip the leading underscores
   c_exports = [demangle_c_symbol_name(e) for e in c_exports]
@@ -232,8 +242,11 @@ def lld_flags_for_executable(external_symbols):
 
   if settings.STACK_FIRST:
     cmd.append('--stack-first')
-  elif not settings.RELOCATABLE:
-    cmd.append('--global-base=%s' % settings.GLOBAL_BASE)
+
+  if not settings.RELOCATABLE:
+    cmd.append('--table-base=%s' % settings.TABLE_BASE)
+    if not settings.STACK_FIRST:
+      cmd.append('--global-base=%s' % settings.GLOBAL_BASE)
 
   return cmd
 
@@ -255,6 +268,11 @@ def link_lld(args, target, external_symbols=None):
 
   if settings.STRICT:
     args.append('--fatal-warnings')
+
+  if '--strip-all' in args:
+    # Tell wasm-ld to always generate a target_features section even if --strip-all
+    # is passed.
+    args.append('--keep-section=target_features')
 
   cmd = [WASM_LD, '-o', target] + args
   for a in llvm_backend_args():
@@ -281,9 +299,15 @@ def get_command_with_possible_response_file(cmd):
   # One of None, 0 or 1. (None: do default decision, 0: force disable, 1: force enable)
   force_response_files = os.getenv('EM_FORCE_RESPONSE_FILES')
 
-  # 8k is a bit of an arbitrary limit, but a reasonable one
-  # for max command line size before we use a response file
-  if (len(shared.shlex_join(cmd)) <= 8192 and force_response_files != '1') or force_response_files == '0':
+  # Different OS have different limits. The most limiting usually is Windows one
+  # which is set at 8191 characters. We could just use that, but it leads to
+  # problems when invoking shell wrappers (e.g. emcc.bat), which, in turn,
+  # pass arguments to some longer command like `(full path to Clang) ...args`.
+  # In that scenario, even if the initial command line is short enough, the
+  # subprocess can still run into the Command Line Too Long error.
+  # Reduce the limit by ~1K for now to be on the safe side, but we might need to
+  # adjust this in the future if it turns out not to be enough.
+  if (len(shared.shlex_join(cmd)) <= 7000 and force_response_files != '1') or force_response_files == '0':
     return cmd
 
   logger.debug('using response file for %s' % cmd[0])
@@ -334,9 +358,9 @@ def acorn_optimizer(filename, passes, extra_info=None, return_output=False):
       f.write('// EXTRA_INFO: ' + extra_info)
     filename = temp
   cmd = config.NODE_JS + [optimizer, filename] + passes
-  # Keep JS code comments intact through the acorn optimization pass so that JSDoc comments
-  # will be carried over to a later Closure run.
-  if settings.USE_CLOSURE_COMPILER:
+  # Keep JS code comments intact through the acorn optimization pass so that
+  # JSDoc comments will be carried over to a later Closure run.
+  if settings.MAYBE_CLOSURE_COMPILER:
     cmd += ['--closureFriendly']
   if settings.EXPORT_ES6:
     cmd += ['--exportES6']
@@ -489,7 +513,8 @@ def closure_transpile(filename):
   user_args = []
   closure_cmd, env = get_closure_compiler_and_env(user_args)
   closure_cmd += ['--language_out', 'ES5']
-  closure_cmd += ['--compilation_level', 'WHITESPACE_ONLY']
+  closure_cmd += ['--compilation_level', 'SIMPLE_OPTIMIZATIONS']
+  closure_cmd += ['--formatting', 'PRETTY_PRINT']
   return run_closure_cmd(closure_cmd, filename, env)
 
 
@@ -554,7 +579,7 @@ def closure_compiler(filename, advanced=True, extra_closure_args=None):
 
   args = ['--compilation_level', 'ADVANCED_OPTIMIZATIONS' if advanced else 'SIMPLE_OPTIMIZATIONS']
   # Keep in sync with ecmaVersion in tools/acorn-optimizer.js
-  args += ['--language_in', 'ECMASCRIPT_2020']
+  args += ['--language_in', 'ECMASCRIPT_2021']
   # Tell closure not to do any transpiling or inject any polyfills.
   # At some point we may want to look into using this as way to convert to ES5 but
   # babel is perhaps a better tool for that.
@@ -678,7 +703,7 @@ def minify_wasm_js(js_file, wasm_file, expensive_optimizations, debug_info):
   if not settings.LINKABLE:
     passes.append('JSDCE' if not expensive_optimizations else 'AJSDCE')
   # Don't minify if we are going to run closure compiler afterwards
-  minify = settings.MINIFY_WHITESPACE and not settings.USE_CLOSURE_COMPILER
+  minify = settings.MINIFY_WHITESPACE and not settings.MAYBE_CLOSURE_COMPILER
   if minify:
     passes.append('minifyWhitespace')
   if passes:
@@ -1069,7 +1094,7 @@ def is_wasm_dylib(filename):
   return False
 
 
-def map_to_js_libs(library_name, emit_tsd):
+def map_to_js_libs(library_name):
   """Given the name of a special Emscripten-implemented system library, returns an
   pair containing
   1. Array of absolute paths to JS library files, inside emscripten/src/ that corresponds to the
@@ -1078,11 +1103,8 @@ def map_to_js_libs(library_name, emit_tsd):
   2. Optional name of a corresponding native library to link in.
   """
   # Some native libraries are implemented in Emscripten as system side JS libraries
-  embind = 'embind/embind.js'
-  if emit_tsd:
-    embind = 'embind/embind_ts.js'
   library_map = {
-    'embind': [embind, 'embind/emval.js'],
+    'embind': ['embind/embind.js', 'embind/emval.js'],
     'EGL': ['library_egl.js'],
     'GL': ['library_webgl.js', 'library_html5_webgl.js'],
     'webgl.js': ['library_webgl.js', 'library_html5_webgl.js'],
@@ -1114,6 +1136,15 @@ def map_to_js_libs(library_name, emit_tsd):
     'embind': 'libembind',
     'GL': 'libGL',
   }
+  settings_map = {
+    'glfw': {'USE_GLFW': 2},
+    'glfw3': {'USE_GLFW': 3},
+    'SDL': {'USE_SDL': 1},
+  }
+
+  if library_name in settings_map:
+    for key, value in settings_map[library_name].items():
+      default_setting(key, value)
 
   if library_name in library_map:
     libs = library_map[library_name]

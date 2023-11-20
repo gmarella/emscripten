@@ -23,6 +23,14 @@
 #error "EVAL_CTORS is not compatible with pthreads yet (passive segments)"
 #endif
 
+{{{
+#if MEMORY64
+globalThis.MAX_PTR = Number((2n ** 64n) - 1n);
+#else
+globalThis.MAX_PTR = (2 ** 32) - 1
+#endif
+}}}
+
 var LibraryPThread = {
   $PThread__postset: 'PThread.init();',
   $PThread__deps: ['_emscripten_thread_init',
@@ -119,7 +127,7 @@ var LibraryPThread = {
     },
 
     initWorker() {
-#if USE_CLOSURE_COMPILER
+#if MAYBE_CLOSURE_COMPILER
       // worker.js is not compiled together with us, and must access certain
       // things.
       PThread['receiveObjectTransfer'] = PThread.receiveObjectTransfer;
@@ -129,7 +137,7 @@ var LibraryPThread = {
 #endif
 #endif
 
-#if !MINIMAL_RUNTIME
+#if isSymbolNeeded('$noExitRuntime')
       // The default behaviour for pthreads is always to exit once they return
       // from their entry point (or call pthread_exit).  If we set noExitRuntime
       // to true here on pthreads they would never complete and attempt to
@@ -143,7 +151,7 @@ var LibraryPThread = {
 
 #if PTHREADS_PROFILING
     getThreadName(pthreadPtr) {
-      var profilerBlock = {{{ makeGetValue('pthreadPtr', C_STRUCTS.pthread.profilerBlock, POINTER_TYPE) }}};
+      var profilerBlock = {{{ makeGetValue('pthreadPtr', C_STRUCTS.pthread.profilerBlock, '*') }}};
       if (!profilerBlock) return "";
       return UTF8ToString(profilerBlock + {{{ C_STRUCTS.thread_profiler_block.name }}});
     },
@@ -162,8 +170,8 @@ var LibraryPThread = {
     },
 
     threadStatusAsString(pthreadPtr) {
-      var profilerBlock = {{{ makeGetValue('pthreadPtr', C_STRUCTS.pthread.profilerBlock, POINTER_TYPE) }}};
-      var status = (profilerBlock == 0) ? 0 : Atomics.load(HEAPU32, (profilerBlock + {{{ C_STRUCTS.thread_profiler_block.threadStatus }}} ) >> 2);
+      var profilerBlock = {{{ makeGetValue('pthreadPtr', C_STRUCTS.pthread.profilerBlock, '*') }}};
+      var status = (profilerBlock == 0) ? 0 : Atomics.load(HEAPU32, {{{ getHeapOffset('profilerBlock + ' + C_STRUCTS.thread_profiler_block.threadStatus, 'i32') }}});
       return PThread.threadStatusToString(status);
     },
 #endif
@@ -452,10 +460,10 @@ var LibraryPThread = {
               createScriptURL: (ignored) => new URL('{{{ PTHREAD_WORKER_FILE }}}', import.meta.url);
             }
           );
-          worker = new Worker(p.createScriptURL('ignored'));
+          worker = new Worker(p.createScriptURL('ignored'), {type: 'module'});
         } else
 #endif
-        worker = new Worker(new URL('{{{ PTHREAD_WORKER_FILE }}}', import.meta.url));
+        worker = new Worker(new URL('{{{ PTHREAD_WORKER_FILE }}}', import.meta.url), {type: 'module'});
       } else {
 #endif
       // Allow HTML module to configure the location where the 'worker.js' file will be loaded from,
@@ -470,10 +478,10 @@ var LibraryPThread = {
       // Use Trusted Types compatible wrappers.
       if (typeof trustedTypes != 'undefined' && trustedTypes.createPolicy) {
         var p = trustedTypes.createPolicy('emscripten#workerPolicy2', { createScriptURL: (ignored) => pthreadMainJs });
-        worker = new Worker(p.createScriptURL('ignored'));
+        worker = new Worker(p.createScriptURL('ignored'){{{ EXPORT_ES6 ? ", {type: 'module'}" : '' }}});
       } else
 #endif
-      worker = new Worker(pthreadMainJs);
+      worker = new Worker(pthreadMainJs{{{ EXPORT_ES6 ? ", {type: 'module'}" : '' }}});
 #if EXPORT_ES6 && USE_ES6_IMPORT_META
     }
 #endif
@@ -568,7 +576,7 @@ var LibraryPThread = {
     // Called when a thread needs to be strongly referenced.
     // Currently only used for:
     // - keeping the "main" thread alive in PROXY_TO_PTHREAD mode;
-    // - crashed threads that needs to propagate the uncaught exception 
+    // - crashed threads that needs to propagate the uncaught exception
     //   back to the main thread.
 #if ENVIRONMENT_MAY_BE_NODE
     if (ENVIRONMENT_IS_NODE) {
@@ -592,7 +600,9 @@ var LibraryPThread = {
       PThread.outstandingPromises[pthread_ptr].resolve();
     }
 #endif
+#if ASSERTIONS
     assert(worker);
+#endif
     PThread.returnWorkerToPool(worker);
   },
 
@@ -694,9 +704,7 @@ var LibraryPThread = {
     return 0;
   },
 
-  emscripten_has_threading_support: () => {
-    return typeof SharedArrayBuffer != 'undefined';
-  },
+  emscripten_has_threading_support: () => typeof SharedArrayBuffer != 'undefined',
 
   emscripten_num_logical_cores: () => {
 #if ENVIRONMENT_MAY_BE_NODE
@@ -727,9 +735,7 @@ var LibraryPThread = {
   $pthreadCreateProxied__internal: true,
   $pthreadCreateProxied__proxy: 'sync',
   $pthreadCreateProxied__deps: ['__pthread_create_js'],
-  $pthreadCreateProxied: (pthread_ptr, attr, startRoutine, arg) => {
-    return ___pthread_create_js(pthread_ptr, attr, startRoutine, arg);
-  },
+  $pthreadCreateProxied: (pthread_ptr, attr, startRoutine, arg) => ___pthread_create_js(pthread_ptr, attr, startRoutine, arg),
 
 #if OFFSCREENCANVAS_SUPPORT
   // ASan wraps the emscripten_builtin_pthread_create call in
@@ -763,13 +769,14 @@ var LibraryPThread = {
     // Deduce which WebGL canvases (HTMLCanvasElements or OffscreenCanvases) should be passed over to the
     // Worker that hosts the spawned pthread.
     // Comma-delimited list of CSS selectors that must identify canvases by IDs: "#canvas1, #canvas2, ..."
-    var transferredCanvasNames = attr ? {{{ makeGetValue('attr', C_STRUCTS.pthread_attr_t._a_transferredcanvases, POINTER_TYPE) }}} : 0;
+    var transferredCanvasNames = attr ? {{{ makeGetValue('attr', C_STRUCTS.pthread_attr_t._a_transferredcanvases, '*') }}} : 0;
 #if OFFSCREENCANVASES_TO_PTHREAD
-    // Proxied canvases string pointer -1 is used as a special token to fetch
-    // whatever canvases were passed to build in -s
-    // OFFSCREENCANVASES_TO_PTHREAD= command line.
-    if (transferredCanvasNames == (-1 >>> 0)) transferredCanvasNames = '{{{ OFFSCREENCANVASES_TO_PTHREAD }}}';
-    else
+    // Proxied canvases string pointer -1/MAX_PTR is used as a special token to
+    // fetch whatever canvases were passed to build in
+    // -sOFFSCREENCANVASES_TO_PTHREAD= command line.
+    if (transferredCanvasNames == {{{ MAX_PTR }}}) {
+      transferredCanvasNames = '{{{ OFFSCREENCANVASES_TO_PTHREAD }}}';
+    } else
 #endif
     if (transferredCanvasNames) transferredCanvasNames = UTF8ToString(transferredCanvasNames).trim();
     if (transferredCanvasNames) transferredCanvasNames = transferredCanvasNames.split(',');
@@ -818,10 +825,10 @@ var LibraryPThread = {
             // Create a shared information block in heap so that we can control
             // the canvas size from any thread.
             if (!canvas.canvasSharedPtr) {
-              canvas.canvasSharedPtr = _malloc(12);
+              canvas.canvasSharedPtr = _malloc({{{ 8 + POINTER_SIZE }}});
               {{{ makeSetValue('canvas.canvasSharedPtr', 0, 'canvas.width', 'i32') }}};
               {{{ makeSetValue('canvas.canvasSharedPtr', 4, 'canvas.height', 'i32') }}};
-              {{{ makeSetValue('canvas.canvasSharedPtr', 8, 0, 'i32') }}}; // pthread ptr to the thread that owns this canvas, filled in below.
+              {{{ makeSetValue('canvas.canvasSharedPtr', 8, 0, '*') }}}; // pthread ptr to the thread that owns this canvas, filled in below.
             }
             offscreenCanvasInfo = {
               offscreenCanvas: canvas.transferControlToOffscreen(),
@@ -952,7 +959,15 @@ var LibraryPThread = {
     _exit(returnCode);
   },
 
-  $proxyToMainThread__deps: ['$withStackSave', '_emscripten_run_on_main_thread_js'],
+#if MEMORY64
+  // Calls proxyToMainThread but returns a bigint rather than a number
+  $proxyToMainThreadPtr__deps: ['$proxyToMainThread'],
+  $proxyToMainThreadPtr: function() {
+    return BigInt(proxyToMainThread.apply(null, arguments));
+  },
+#endif
+
+  $proxyToMainThread__deps: ['$withStackSave', '_emscripten_run_on_main_thread_js'].concat(i53ConversionDeps),
   $proxyToMainThread__docs: '/** @type{function(number, (number|boolean), ...(number|boolean))} */',
   $proxyToMainThread: function(index, sync) {
     // Additional arguments are passed after those two, which are the actual
@@ -972,7 +987,7 @@ var LibraryPThread = {
       // values we serialize for proxying. TODO: pack this?
       var serializedNumCallArgs = numCallArgs {{{ WASM_BIGINT ? "* 2" : "" }}};
       var args = stackAlloc(serializedNumCallArgs * 8);
-      var b = args >> 3;
+      var b = {{{ getHeapOffset('args', 'i64') }}};
       for (var i = 0; i < numCallArgs; i++) {
         var arg = outerArgs[2 + i];
 #if WASM_BIGINT
@@ -1008,7 +1023,7 @@ var LibraryPThread = {
     numCallArgs /= 2;
 #endif
     proxiedJSCallArgs.length = numCallArgs;
-    var b = args >> 3;
+    var b = {{{ getHeapOffset('args', 'i64') }}};
     for (var i = 0; i < numCallArgs; i++) {
 #if WASM_BIGINT
       if (HEAP64[b + 2*i]) {
@@ -1036,14 +1051,27 @@ var LibraryPThread = {
     PThread.currentProxiedOperationCallerThread = callingThread;
     var rtn = func.apply(null, proxiedJSCallArgs);
     PThread.currentProxiedOperationCallerThread = 0;
+#if MEMORY64
+    // In memory64 mode some proxied functions return bigint/pointer but
+    // our return type is i53/double.
+    if (typeof rtn == "bigint") {
+      rtn = bigintToI53Checked(rtn);
+    }
+#endif
+#if ASSERTIONS
+    // Proxied functions can return any type except bigint.  All other types
+    // cooerce to f64/double (the return type of this function in C) but not
+    // bigint.
+    assert(typeof rtn != "bigint");
+#endif
     return rtn;
   },
 
   $establishStackSpace__internal: true,
   $establishStackSpace: () => {
     var pthread_ptr = _pthread_self();
-    var stackHigh = {{{ makeGetValue('pthread_ptr', C_STRUCTS.pthread.stack, 'i32') }}};
-    var stackSize = {{{ makeGetValue('pthread_ptr', C_STRUCTS.pthread.stack_size, 'i32') }}};
+    var stackHigh = {{{ makeGetValue('pthread_ptr', C_STRUCTS.pthread.stack, '*') }}};
+    var stackSize = {{{ makeGetValue('pthread_ptr', C_STRUCTS.pthread.stack_size, '*') }}};
     var stackLow = stackHigh - stackSize;
 #if PTHREADS_DEBUG
     dbg(`establishStackSpace: ${ptrToString(stackHigh)} -> ${ptrToString(stackLow)}`);
@@ -1071,7 +1099,15 @@ var LibraryPThread = {
 #endif
   },
 
-  $invokeEntryPoint__deps: ['_emscripten_thread_exit'],
+  $invokeEntryPoint__deps: [
+    '_emscripten_thread_exit',
+#if !MINIMAL_RUNTIME
+    '$keepRuntimeAlive',
+#endif
+#if EXIT_RUNTIME && !MINIMAL_RUNTIME
+    '$runtimeKeepaliveCounter',
+#endif
+  ],
   $invokeEntryPoint: (ptr, arg) => {
 #if PTHREADS_DEBUG
     dbg(`invokeEntryPoint: ${ptrToString(ptr)}`);
@@ -1216,33 +1252,45 @@ var LibraryPThread = {
 #endif // MAIN_MODULE
 
   $checkMailbox__deps: ['$callUserCallback',
+                        '_emscripten_check_mailbox',
                         '_emscripten_thread_mailbox_await'],
   $checkMailbox: () => {
     // Only check the mailbox if we have a live pthread runtime. We implement
     // pthread_self to return 0 if there is no live runtime.
     var pthread_ptr = _pthread_self();
     if (pthread_ptr) {
-      // If we are using Atomics.waitAsync as our notification mechanism, wait for
-      // a notification before processing the mailbox to avoid missing any work.
+      // If we are using Atomics.waitAsync as our notification mechanism, wait
+      // for a notification before processing the mailbox to avoid missing any
+      // work that could otherwise arrive after we've finished processing the
+      // mailbox and before we're ready for the next notification.
       __emscripten_thread_mailbox_await(pthread_ptr);
-      callUserCallback(() => __emscripten_check_mailbox());
+      callUserCallback(__emscripten_check_mailbox);
     }
   },
 
   _emscripten_thread_mailbox_await__deps: ['$checkMailbox'],
   _emscripten_thread_mailbox_await: (pthread_ptr) => {
     if (typeof Atomics.waitAsync === 'function') {
+      // Wait on the pthread's initial self-pointer field because it is easy and
+      // safe to access from sending threads that need to notify the waiting
+      // thread.
       // TODO: How to make this work with wasm64?
-      var wait = Atomics.waitAsync(HEAP32, pthread_ptr >> 2, pthread_ptr);
+      var wait = Atomics.waitAsync(HEAP32, {{{ getHeapOffset('pthread_ptr', 'i32') }}}, pthread_ptr);
 #if ASSERTIONS
       assert(wait.async);
 #endif
       wait.value.then(checkMailbox);
       var waitingAsync = pthread_ptr + {{{ C_STRUCTS.pthread.waiting_async }}};
-      Atomics.store(HEAP32, waitingAsync >> 2, 1);
+      Atomics.store(HEAP32, {{{ getHeapOffset('waitingAsync', 'i32') }}}, 1);
     }
+    // If `Atomics.waitAsync` is not implemented, then we will always fall back
+    // to postMessage and there is no need to do anything here.
   },
 
+  // PostMessage is used to notify threads instead of Atomics.notify whenever
+  // the environment does not implement Atomics.waitAsync or when messaging a
+  // new thread that has not had a chance to initialize itself and execute
+  // Atomics.waitAsync to prepare for the notification.
   _emscripten_notify_mailbox_postmessage__deps: ['$checkMailbox'],
   _emscripten_notify_mailbox_postmessage: (targetThreadId, currThreadId, mainThreadId) => {
     if (targetThreadId == currThreadId) {

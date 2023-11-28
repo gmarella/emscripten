@@ -14,6 +14,7 @@
 import argparse
 import json
 import os
+import pickle
 import re
 import subprocess
 import sys
@@ -41,6 +42,11 @@ class LocationInfo(object):
     source = self.source if self.source else '??'
     func = self.func if self.func else '??'
     print(f'{func}\n{source}:{self.line}:{self.column}')
+
+  def getAsJson(self):
+    source = self.source if self.source else '??'
+    func = self.func if self.func else '??'
+    return {'source': source, 'func': func, 'line': self.line, 'column':self.column}
 
 
 def get_codesec_offset(module):
@@ -214,8 +220,93 @@ def symbolize_address_sourcemap(module, address, force_file, offsetConverter):
       print(f'{k-csoff:x}: {v}')
   sm.lookup(address).print()
 
+def build_address_sourcemap(module, force_file, offsetConverter):
+  URL = force_file
+  if not URL:
+    # If a sourcemap file is not forced, read it from the wasm module
+    section = get_sourceMappingURL_section(module)
+    assert section
+    module.seek(section.offset)
+    assert module.read_string() == 'sourceMappingURL'
+    # TODO: support stripping/replacing a prefix from the URL
+    URL = module.read_string()
+
+  if shared.DEBUG:
+    print(f'Source Mapping URL: {URL}')
+  sm = WasmSourceMap(offsetConverter)
+  sm.parse(URL)
+  if shared.DEBUG:
+    csoff = get_codesec_offset(module)
+    print(sm.mappings)
+    # Print with section offsets to easily compare against dwarf
+    for k, v in sm.mappings.items():
+      print(f'{k-csoff:x}: {v}')
+  return sm
+
+def convert_pc_file_to_symbol_file(args):
+  print("convert_pc_file_to_symbol_file", args)
+  pc_file = args.address
+  # removing the new line characters
+  with open(pc_file) as f:
+      pcs = [line.rstrip() for line in f]
+  print("Number of addresses: {}".format(len(pcs)))
+
+  out_sym_map_file = pc_file + ".symbol_map.json"
+
+  with webassembly.Module(args.wasm_file) as module:
+    offsetConverter = wasm_offset_converter.WasmOffsetConverter(args.wasm_file, module)
+    sm = build_address_sourcemap(module, args.file, offsetConverter)
+    pc_info = {}
+    for pc in pcs:
+      base = 16 if pc.lower().startswith('0x') else 10
+      address_str = pc
+      if address_str[-8] == "8":
+        # TODO:Gopi; ust dumping random name for JS symbol, fix this properly.
+        print(f'anonymous_js_function\n??:??:??')
+        # address_str = address_str[:-8] + '0' + address_str[-7:]
+        locInfo = LocationInfo(
+          "??",
+          "??",
+          "??",
+          "anonymous_js_function"
+        )
+        pc_info[address_str] = locInfo.getAsJson()
+      else:
+        address = int(address_str, base)
+        symbolized = 0
+
+        if args.addrtype == 'code':
+          address += get_codesec_offset(module)
+
+        if ((has_debug_line_section(module) and not args.source) or
+          'dwarf' in args.source):
+          symbolize_address_dwarf(module, address)
+          symbolized += 1
+
+        if ((get_sourceMappingURL_section(module) and not args.source) or
+          'sourcemap' in args.source):
+          #print(sm.lookup(address))
+          addr_info = sm.lookup(address).getAsJson()
+          #print(address, addr_info)
+          pc_info[address_str] = addr_info
+          symbolized += 1
+
+        if not symbolized:
+          raise Error('No .debug_line or sourceMappingURL section found in '
+                      f'{module.filename}.'
+                      " I don't know how to symbolize this file yet")
+    print("Writing symbols to {}".format(out_sym_map_file))
+    with open(out_sym_map_file, 'w') as f:
+      json.dump(pc_info, f)
+      #pickle.dump(pc_info, f)
+
 
 def main(args):
+  print(args)
+  if args.addrfile == 'file':
+    convert_pc_file_to_symbol_file(args)
+    return
+  
   with webassembly.Module(args.wasm_file) as module:
     base = 16 if args.address.lower().startswith('0x') else 10
     address_str = args.address
@@ -259,7 +350,15 @@ def get_args():
   parser.add_argument('-v', '--verbose', action='store_true',
                       help='Print verbose info for debugging this script')
   parser.add_argument('wasm_file', help='Wasm file')
-  parser.add_argument('address', help='Address to lookup')
+  # addr_group =  parser.add_mutually_exclusive_group()
+  # addr_group.add_argument('address', help='Address to lookup', nargs='?')
+  # addr_group.add_argument('address-file', help='Address File', nargs='?')
+  parser.add_argument('address', help='Address to lookup or File containing addresses')
+
+  parser.add_argument('-x', '--addrfile', choices=['code', 'file'],
+                      default='code',
+                      help='address is file or hexcode')
+
   args = parser.parse_args()
   if args.verbose:
     shared.PRINT_SUBPROCS = 1

@@ -104,6 +104,10 @@ class WasmOffsetConverter:
 
     def isSameFunc(self, offset1, offset2):
         return self.getIndex(offset1) == self.getIndex(offset2)
+    
+    def printLookupMap(self):
+        print("wasmOffsetConverter lookup map\n")
+        print(self.name_map)
 
     def getName(self, offset):
         index = self.getIndex(offset)

@@ -14,6 +14,7 @@
 import argparse
 import json
 import os
+import numbers
 import pickle
 import re
 import subprocess
@@ -101,6 +102,10 @@ class WasmSourceMap(object):
       self.line = line
       self.column = column
       self.func = func
+    def __repr__(self) -> str:
+      return "Location(source={0},line={1},column={2},func={3})".format(
+        self.source, self.line, self.column, self.func
+      )
 
   def __init__(self, offsetConverter):
     self.offsetConverter = offsetConverter
@@ -243,6 +248,19 @@ def build_address_sourcemap(module, force_file, offsetConverter):
       print(f'{k-csoff:x}: {v}')
   return sm
 
+
+def isJSPC(val):
+    addr = '{:032b}'.format(val)
+    return addr[0] == '1'
+
+def getJSPC(val):
+    addr = '{:032b}'.format(val)
+    print(addr, type(addr))
+    addr = '0' + addr[1:]
+    print(addr, type(addr))
+    print("\t {}".format(addr))
+    return int(addr, 2)
+
 def convert_pc_file_to_symbol_file(args):
   print("convert_pc_file_to_symbol_file", args)
   pc_file = args.address
@@ -252,27 +270,38 @@ def convert_pc_file_to_symbol_file(args):
   print("Number of addresses: {}".format(len(pcs)))
 
   out_sym_map_file = pc_file + ".symbol_map.json"
+  #js_pc_map_file = "/Users/gmarella/Documents/SampleAppMemProfiling/JS_PC_CACHE.json"
+  js_pc_map_file = "/Users/gmarella/Documents/VenusMemProfiling/VENUS_JS_PC_CACHE.json"
+  out_offset_convertet_map_file = pc_file +".offset_map.json"
+
+  with open(js_pc_map_file, "r") as js_pc_file:
+    JS_PC_MAP = json.load(js_pc_file)
 
   with webassembly.Module(args.wasm_file) as module:
     offsetConverter = wasm_offset_converter.WasmOffsetConverter(args.wasm_file, module)
+    with open(out_offset_convertet_map_file, "w") as out_offset_file:
+      json.dump(offsetConverter.name_map, out_offset_file)
     sm = build_address_sourcemap(module, args.file, offsetConverter)
     pc_info = {}
     for pc in pcs:
       base = 16 if pc.lower().startswith('0x') else 10
       address_str = pc
-      if address_str[-8] == "8":
-        # TODO:Gopi; ust dumping random name for JS symbol, fix this properly.
-        print(f'anonymous_js_function\n??:??:??')
-        # address_str = address_str[:-8] + '0' + address_str[-7:]
+      address = int(address_str, base)
+      if isJSPC(address):
+        print("JS: Before address: {0}".format(address))
+        address = getJSPC(address)
+        print("JS: After address: {0}".format(address))
+
+        src = JS_PC_MAP[str(address)]
+        print("JS: address: {0}, source: {1}".format(address, src))
         locInfo = LocationInfo(
           "??",
           "??",
           "??",
-          "anonymous_js_function"
+          src
         )
         pc_info[address_str] = locInfo.getAsJson()
       else:
-        address = int(address_str, base)
         symbolized = 0
 
         if args.addrtype == 'code':

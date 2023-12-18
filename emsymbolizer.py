@@ -188,6 +188,8 @@ class WasmSourceMap(object):
         hi = mid
       else:
         lo = mid + 1
+    if lo >= len(self.offsets):
+      print("--->find_offset: offset_len: {0}, ret_lo:{1}".format(len(self.offsets), lo))
     return self.offsets[lo - 1]
 
   def lookup(self, offset):
@@ -255,11 +257,44 @@ def isJSPC(val):
 
 def getJSPC(val):
     addr = '{:032b}'.format(val)
-    print(addr, type(addr))
     addr = '0' + addr[1:]
-    print(addr, type(addr))
-    print("\t {}".format(addr))
     return int(addr, 2)
+
+def get_location_info_from_line(line, pc_addr):
+  m = re.search('\(https://(.+?)\)', line)
+  file_name = "??"
+  line_no = "??"
+  col_no = "??"
+  function_name = pc_addr
+  source_line = None
+  if m:
+    source_line = m.group(1)
+    #print("Found: ", found)
+    # Exclude the https substring for function-name.
+    function_name = line.replace(source_line, '')
+    function_name = function_name.replace("(https://)", '')
+    # print("Function: ", function_name)
+  elif "https://" in line:
+    # Some stacktrace lines are present without any function names.
+    # e.g https://localhost.corp.adobe.com:3000/libProteusWeb.js:14757:34
+    function_name = pc_addr
+    source_line = line.strip()
+
+  if source_line:
+    first_slash = source_line.find('/')
+    file_line_col_substr = source_line[first_slash:]
+    colon_positions = [pos for pos, char in enumerate(file_line_col_substr) if char == ':']
+    file_name = file_line_col_substr[:colon_positions[0]]
+    line_no = file_line_col_substr[colon_positions[0]+1 : colon_positions[1]]
+    col_no = file_line_col_substr[colon_positions[1]+1 : ]
+    #print("Source Info fileName:{0}, line_no: {1}, column_no:{2}".format(file_name, line_no, col_no))
+
+  return LocationInfo(
+    file_name,
+    line_no,
+    col_no,
+    function_name
+  )
 
 def convert_pc_file_to_symbol_file(args):
   print("convert_pc_file_to_symbol_file", args)
@@ -288,18 +323,20 @@ def convert_pc_file_to_symbol_file(args):
       address_str = pc
       address = int(address_str, base)
       if isJSPC(address):
-        print("JS: Before address: {0}".format(address))
         address = getJSPC(address)
-        print("JS: After address: {0}".format(address))
 
-        src = JS_PC_MAP[str(address)]
-        print("JS: address: {0}, source: {1}".format(address, src))
-        locInfo = LocationInfo(
-          "??",
-          "??",
-          "??",
-          src
-        )
+        pc_addr = str(address)
+        if pc_addr in JS_PC_MAP:
+          src = JS_PC_MAP[pc_addr]
+          locInfo = get_location_info_from_line(src, pc_addr)
+        else:
+          locInfo = LocationInfo(
+            "?",
+            "?",
+            "?",
+            str(address)
+          )
+        #print("JS: address: {0}, source: {1}".format(hex(address), src))
         pc_info[address_str] = locInfo.getAsJson()
       else:
         symbolized = 0

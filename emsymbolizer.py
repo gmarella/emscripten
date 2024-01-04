@@ -113,6 +113,7 @@ class WasmSourceMap(object):
     self.sources = []
     self.mappings = {}
     self.offsets = []
+    self.names = {}
 
   def parse(self, filename):
     with open(filename) as f:
@@ -122,6 +123,7 @@ class WasmSourceMap(object):
 
     self.version = source_map_json['version']
     self.sources = source_map_json['sources']
+    self.names = source_map_json['names']
 
     vlq_map = {}
     chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='
@@ -149,6 +151,7 @@ class WasmSourceMap(object):
 
     offset = 0
     src = 0
+    name = 0
     line = 1
     col = 1
     for segment in source_map_json['mappings'].split(','):
@@ -167,11 +170,12 @@ class WasmSourceMap(object):
       if len(data) >= 4:
         col += data[3]
         info.append(col)
-      info.append(self.offsetConverter.getName(offset))
       # if len(data) >= 5:
+      #   print("Name exists!!")
       #   name += data[4]
       #   info.append(name)
-      # TODO: see if we need the name, which is the next field (data[4])
+
+      info.append(self.offsetConverter.getName(offset))
 
       self.mappings[offset] = WasmSourceMap.Location(*info)
       self.offsets.append(offset)
@@ -196,12 +200,17 @@ class WasmSourceMap(object):
     nearest = self.find_offset(offset)
     assert nearest in self.mappings, 'Sourcemap has an offset with no mapping'
     info = self.mappings[nearest]
-    return LocationInfo(
+    offset_converter_ret = self.offsetConverter.getName(offset)
+    locInfo = LocationInfo(
         self.sources[info.source] if info.source is not None else None,
         info.line,
         info.column,
-        info.func
+        offset_converter_ret
+        # info.func
+        #self.names[info.func]
       )
+    #print(f'offset: {hex(offset)}, nearest: {hex(nearest)}, info: {info}, offsetConvRet: {offset_converter_ret}')
+    return locInfo
 
 
 def symbolize_address_sourcemap(module, address, force_file, offsetConverter):
@@ -297,12 +306,12 @@ def get_location_info_from_line(line, pc_addr):
   )
 
 def convert_pc_file_to_symbol_file(args):
-  print("convert_pc_file_to_symbol_file", args)
+  #print("convert_pc_file_to_symbol_file", args)
   pc_file = args.address
   # removing the new line characters
   with open(pc_file) as f:
       pcs = [line.rstrip() for line in f]
-  print("Number of addresses: {}".format(len(pcs)))
+  #print("Number of addresses: {}".format(len(pcs)))
 
   out_sym_map_file = pc_file + ".symbol_map.json"
   #js_pc_map_file = "/Users/gmarella/Documents/SampleAppMemProfiling/JS_PC_CACHE.json"
@@ -314,6 +323,11 @@ def convert_pc_file_to_symbol_file(args):
 
   with webassembly.Module(args.wasm_file) as module:
     offsetConverter = wasm_offset_converter.WasmOffsetConverter(args.wasm_file, module)
+    #offsetConverterMapFile = pc_file + ".offset_converter.json"
+    #print(f'OffsetConverter Map to {offsetConverterMapFile}')
+    #offsetConverter.printDetails()
+    #offsetConverter.dumpLookUpMap(offsetConverterMapFile)
+  
     with open(out_offset_convertet_map_file, "w") as out_offset_file:
       json.dump(offsetConverter.name_map, out_offset_file)
     sm = build_address_sourcemap(module, args.file, offsetConverter)
@@ -341,8 +355,8 @@ def convert_pc_file_to_symbol_file(args):
       else:
         symbolized = 0
 
-        if args.addrtype == 'code':
-          address += get_codesec_offset(module)
+        # if args.addrtype == 'code':
+        #   address += get_codesec_offset(module)
 
         if ((has_debug_line_section(module) and not args.source) or
           'dwarf' in args.source):
@@ -353,22 +367,25 @@ def convert_pc_file_to_symbol_file(args):
           'sourcemap' in args.source):
           #print(sm.lookup(address))
           addr_info = sm.lookup(address).getAsJson()
-          #print(address, addr_info)
+          # print(hex(address), addr_info)
           pc_info[address_str] = addr_info
           symbolized += 1
+          # print(f'Trying again for offset {hex(address)}')
+          # address += get_codesec_offset(module)
+          # addr_info2 = sm.lookup(address).getAsJson()
+          # print(f'After offset addition: {hex(address)}, {addr_info2}')
 
         if not symbolized:
           raise Error('No .debug_line or sourceMappingURL section found in '
                       f'{module.filename}.'
                       " I don't know how to symbolize this file yet")
-    print("Writing symbols to {}".format(out_sym_map_file))
+    # print("Writing symbols to {}".format(out_sym_map_file))
     with open(out_sym_map_file, 'w') as f:
       json.dump(pc_info, f)
       #pickle.dump(pc_info, f)
 
 
 def main(args):
-  print(args)
   if args.addrfile == 'file':
     convert_pc_file_to_symbol_file(args)
     return

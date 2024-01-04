@@ -1,4 +1,5 @@
 from tools import webassembly
+import json
 # 
 """
 Python version of wasm_offset_converter.js
@@ -81,6 +82,7 @@ class WasmOffsetConverter:
                 while count > 0:
                     size = unsignedLEB128()
                     self.offset_map[funcidx] = offset
+                    funcidx += 1
                     self.func_starts.append(offset)
                     offset += size
                     count -= 1
@@ -100,6 +102,8 @@ class WasmOffsetConverter:
                 hi = mid
             else:
                 lo = mid + 1
+        if lo == len(self.func_starts):
+            return -1
         return lo + self.import_functions - 1
 
     def isSameFunc(self, offset1, offset2):
@@ -108,6 +112,20 @@ class WasmOffsetConverter:
     def printLookupMap(self):
         print("wasmOffsetConverter lookup map\n")
         print(self.name_map)
+
+    def printDetails(self):
+        print("wasmOffsetConverter details\n")
+        print(f'NameMap entries: {len(self.name_map)}, ImportedFunctions: {self.import_functions}, OffsetMap: {len(self.offset_map)}')
+
+    def dumpLookUpMap(self, filePath):
+        with open(filePath, 'w') as fileHandle:
+            json.dump(self.name_map, fileHandle)
+
+    def lookupIndexFromName(self, fname):
+        for key, value in self.name_map.items():
+            if fname in value:
+                return [key, value, hex(self.offset_map[key])]
+        return [None, None, None]
 
     def getName(self, offset):
         index = self.getIndex(offset)

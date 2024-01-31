@@ -315,7 +315,7 @@ def convert_pc_file_to_symbol_file(args):
 
   out_sym_map_file = pc_file + ".symbol_map.json"
   #js_pc_map_file = "/Users/gmarella/Documents/SampleAppMemProfiling/JS_PC_CACHE.json"
-  js_pc_map_file = "/Users/gmarella/Documents/VenusMemProfiling/VENUS_JS_PC_CACHE.json"
+  js_pc_map_file = "/Users/gmarella/Documents/VenusMemProfiling/obj_files/VENUS_JS_PC_CACHE.json"
   out_offset_convertet_map_file = pc_file +".offset_map.json"
 
   with open(js_pc_map_file, "r") as js_pc_file:
@@ -357,6 +357,8 @@ def convert_pc_file_to_symbol_file(args):
 
         # if args.addrtype == 'code':
         #   address += get_codesec_offset(module)
+
+        # print(f'has_debug_line_section?: ${has_debug_line_section(module)}')
 
         if ((has_debug_line_section(module) and not args.source) or
           'dwarf' in args.source):

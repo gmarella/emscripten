@@ -368,9 +368,16 @@ def convert_pc_file_to_symbol_file(args):
         if ((get_sourceMappingURL_section(module) and not args.source) or
           'sourcemap' in args.source):
           #print(sm.lookup(address))
-          addr_info = sm.lookup(address).getAsJson()
+          #addr_info = sm.lookup(address).getAsJson()
+          addr_info = LocationInfo(
+            "?",
+            "?",
+            "?",
+            offsetConverter.getName(address)
+          )
+
           # print(hex(address), addr_info)
-          pc_info[address_str] = addr_info
+          pc_info[address_str] = addr_info.getAsJson()
           symbolized += 1
           # print(f'Trying again for offset {hex(address)}')
           # address += get_codesec_offset(module)

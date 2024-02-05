@@ -270,7 +270,7 @@ def getJSPC(val):
     return int(addr, 2)
 
 def get_location_info_from_line(line, pc_addr):
-  m = re.search('\(https://(.+?)\)', line)
+  m = re.search(r"\(https://(.+?)\)", line)
   file_name = "??"
   line_no = "??"
   col_no = "??"

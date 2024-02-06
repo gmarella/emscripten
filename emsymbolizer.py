@@ -315,7 +315,9 @@ def convert_pc_file_to_symbol_file(args):
 
   out_sym_map_file = pc_file + ".symbol_map.json"
   #js_pc_map_file = "/Users/gmarella/Documents/SampleAppMemProfiling/JS_PC_CACHE.json"
-  js_pc_map_file = "/Users/gmarella/Documents/VenusMemProfiling/obj_files/VENUS_JS_PC_CACHE.json"
+  OUT_DIR = os.path.dirname(pc_file)
+  js_pc_map_file = os.path.join(OUT_DIR, "VENUS_JS_PC_CACHE.json")
+  #js_pc_map_file = "/Users/gmarella/Documents/VenusMemProfiling/obj_files/VENUS_JS_PC_CACHE.json"
   out_offset_convertet_map_file = pc_file +".offset_map.json"
 
   with open(js_pc_map_file, "r") as js_pc_file:
@@ -330,7 +332,7 @@ def convert_pc_file_to_symbol_file(args):
   
     with open(out_offset_convertet_map_file, "w") as out_offset_file:
       json.dump(offsetConverter.name_map, out_offset_file)
-    sm = build_address_sourcemap(module, args.file, offsetConverter)
+    #sm = build_address_sourcemap(module, args.file, offsetConverter)
     pc_info = {}
     for pc in pcs:
       base = 16 if pc.lower().startswith('0x') else 10
